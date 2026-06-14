@@ -303,8 +303,9 @@ func (sys *ActorSystem) Shutdown() {
 		proc.mailbox.PushSystem(systemStop)
 	}
 	sys.mu.RUnlock()
-
+	os.Exit(1)
 	sys.wg.Wait()
+
 }
 
 // Register 将 pid 注册到指定 name，用于 Actor 运行时更新自己的可寻址名称。
