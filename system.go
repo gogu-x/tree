@@ -8,6 +8,9 @@ import (
 	"runtime"
 	"sync"
 	"syscall"
+	"time"
+
+	"github.com/gogu-x/bigTree/timer"
 )
 
 // defaultLogger is the fallback logger when no custom logger is provided.
@@ -23,16 +26,17 @@ var defaultLogger Logger = stdLogger{}
 type ActorSystem struct {
 	mu       sync.RWMutex
 	actors   map[PID]*actorProcess
-	registry map[string]PID // name ?PID registry
+	registry map[string]PID // name → PID registry
 	wg       sync.WaitGroup
 }
 
 // actorProcess holds the runtime state for a single actor.
 type actorProcess struct {
-	pid     PID
-	actor   Actor
-	mailbox *Mailbox
-	logger  Logger
+	pid       PID
+	actor     Actor
+	mailbox   *Mailbox
+	logger    Logger
+	timeWheel *timer.TimeWheel
 }
 
 // NewActorSystem creates a new empty ActorSystem.
@@ -56,10 +60,11 @@ func (sys *ActorSystem) Spawn(name string, actor Actor, opts ...SpawnOption) PID
 	mb := NewMailbox(cfg.mailboxSize)
 
 	proc := &actorProcess{
-		pid:     pid,
-		actor:   actor,
-		mailbox: mb,
-		logger:  cfg.logger,
+		pid:       pid,
+		actor:     actor,
+		mailbox:   mb,
+		logger:    cfg.logger,
+		timeWheel: timer.NewTimeWheel(64),
 	}
 
 	sys.mu.Lock()
@@ -95,6 +100,7 @@ func (sys *ActorSystem) MustLookup(name string) PID {
 // run is the main loop for an actor process.
 func (sys *ActorSystem) run(proc *actorProcess) {
 	defer sys.wg.Done()
+	defer proc.timeWheel.Stop()
 	defer func() {
 		proc.mailbox.Close()
 		sys.mu.Lock()
@@ -126,6 +132,9 @@ func (sys *ActorSystem) run(proc *actorProcess) {
 
 		case pipeCallback:
 			sys.safeCall(proc, func() { m.cb(m.value, m.err) })
+
+		case timerCallback:
+			sys.safeCall(proc, func() { m.cb(ctx) })
 
 		case *requestEnvelope:
 			reqCtx := &localContext{
@@ -258,6 +267,32 @@ func (sys *ActorSystem) stop(pid PID) {
 	if ok {
 		proc.mailbox.PushSystem(systemStop)
 	}
+}
+
+// afterFunc schedules cb to be delivered to pid's mailbox after duration d.
+func (sys *ActorSystem) afterFunc(pid PID, d time.Duration, cb func(ActorContext)) *timer.WheelTimer {
+	sys.mu.RLock()
+	proc, ok := sys.actors[pid]
+	sys.mu.RUnlock()
+	if !ok {
+		return nil
+	}
+	return proc.timeWheel.AfterFunc(d, func() {
+		sys.sendRaw(pid, timerCallback{cb: cb})
+	})
+}
+
+// cronFunc schedules cb to be delivered to pid's mailbox on the cron schedule.
+func (sys *ActorSystem) cronFunc(pid PID, cronExpr *timer.CronExpr, cb func(ActorContext)) *timer.WheelCron {
+	sys.mu.RLock()
+	proc, ok := sys.actors[pid]
+	sys.mu.RUnlock()
+	if !ok {
+		return nil
+	}
+	return proc.timeWheel.CronFunc(cronExpr, func() {
+		sys.sendRaw(pid, timerCallback{cb: cb})
+	})
 }
 
 // Shutdown sends a stop signal to all registered actors and waits for them

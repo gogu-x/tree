@@ -60,3 +60,9 @@ type requestEnvelope struct {
 	future *Future
 	values map[string]interface{}
 }
+
+// timerCallback is delivered to an actor's mailbox when a timer fires,
+// so the callback executes in the same goroutine as HandleMessage.
+type timerCallback struct {
+	cb func(ActorContext)
+}
