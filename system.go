@@ -102,7 +102,6 @@ func (sys *ActorSystem) run(proc *actorProcess) {
 	defer sys.wg.Done()
 	defer proc.timeWheel.Stop()
 	defer func() {
-		proc.mailbox.Close()
 		sys.mu.Lock()
 		delete(sys.actors, proc.pid)
 		// Clean up registry: only remove if it still points to this PID
@@ -118,10 +117,7 @@ func (sys *ActorSystem) run(proc *actorProcess) {
 	sys.safeCall(proc, func() { proc.actor.OnInit(ctx) })
 
 	for {
-		msg, ok := <-proc.mailbox.Inbox()
-		if !ok {
-			return
-		}
+		msg := proc.mailbox.Receive()
 
 		switch m := msg.(type) {
 		case systemMessage:

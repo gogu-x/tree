@@ -184,26 +184,13 @@ func TestMailboxPriority(t *testing.T) {
 	mb := NewMailbox(2)
 
 	mb.PushUser("user-msg")
+	mb.PushSystem(systemStop) // systemChan 带缓冲，不阻塞
 
-	done := make(chan bool)
-	go func() {
-		msg1 := <-mb.Inbox()
-		if msg1 != systemStop {
-			t.Errorf("expected system message first, got %v", msg1)
-		}
-		msg2 := <-mb.Inbox()
-		if msg2 != "user-msg" {
-			t.Errorf("expected user message second, got %v", msg2)
-		}
-		done <- true
-	}()
-
-	mb.PushSystem(systemStop)
-
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("timeout waiting for priority messages")
+	if got := mb.Receive(); got != systemStop {
+		t.Fatalf("expected system message first, got %v", got)
+	}
+	if got := mb.Receive(); got != "user-msg" {
+		t.Fatalf("expected user message second, got %v", got)
 	}
 }
 
