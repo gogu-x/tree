@@ -27,7 +27,7 @@ func (a *serialActor) tryDone() {
 }
 
 func (a *serialActor) OnInit(ctx ActorContext) {
-	// 定时器挂在 actor 自身，通过 ctx 注册
+	// 定时器挂自身，通过 ctx 注册
 	ctx.AfterFunc(20*time.Millisecond, func(ctx ActorContext) {
 		a.enter("timer")
 		time.Sleep(5 * time.Millisecond)

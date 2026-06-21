@@ -184,8 +184,7 @@ func TestMailboxPriority(t *testing.T) {
 	mb := NewMailbox(2)
 
 	mb.PushUser("user-msg")
-	mb.PushSystem(systemStop) // systemChan 带缓冲，不阻塞
-
+	mb.PushSystem(systemStop)
 	if got := mb.Receive(); got != systemStop {
 		t.Fatalf("expected system message first, got %v", got)
 	}
