@@ -313,6 +313,11 @@ func (sys *ActorSystem) Shutdown() {
 	sys.timeWheel.Stop()
 }
 
+// SendCallback 向目标 Actor 投递一个回调，回调在目标 Actor 的 goroutine 内串行执行。
+func (sys *ActorSystem) SendCallback(pid PID, cb func(interface{}, error), value interface{}, err error) bool {
+	return sys.sendRaw(pid, pipeCallback{cb: cb, value: value, err: err})
+}
+
 // Register 将 pid 注册到指定 name，用于 Actor 运行时更新自己的可寻址名称。
 // 如果 name 已被其他 PID 占用，会覆盖。
 func (sys *ActorSystem) Register(name string, pid PID) {

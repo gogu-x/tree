@@ -14,6 +14,11 @@ func Spawn(name string, a Actor, opts ...SpawnOption) PID {
 // Send 通过全局系统向目标 Actor 发送消息。
 func Send(pid PID, msg interface{}) bool { return defaultSystem.Send(pid, msg) }
 
+// SendCallback 向目标 Actor 投递回调，在目标 Actor goroutine 内执行。
+func SendCallback(pid PID, cb func(interface{}, error), value interface{}, err error) bool {
+	return defaultSystem.SendCallback(pid, cb, value, err)
+}
+
 // Lookup 在全局系统中按名称查找 Actor。
 func Lookup(name string) (PID, bool) { return defaultSystem.Lookup(name) }
 
