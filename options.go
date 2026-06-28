@@ -16,7 +16,7 @@ type spawnConfig struct {
 
 func defaultSpawnConfig() spawnConfig {
 	return spawnConfig{
-		mailboxSize: 6048,
+		mailboxSize: 128,
 		logger:      defaultLogger,
 	}
 }
