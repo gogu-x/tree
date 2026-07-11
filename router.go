@@ -1,4 +1,4 @@
-package actor
+package tree
 
 import (
 	"fmt"
@@ -7,7 +7,7 @@ import (
 
 // Handler is a function that handles a specific message type.
 // It is called by the Router when a matching message arrives.
-type Handler func(ctx ActorContext, msg interface{})
+type Handler func(ctx Context, msg interface{})
 
 type Router struct {
 	handlers map[reflect.Type]Handler
@@ -38,15 +38,15 @@ func (r *Router) SetFallback(h Handler) {
 
 // RegisterFunc 泛型注册，fn 直接接收强类型消息，省去类型断言。
 // 用法：actor.RegisterFunc(r, &LoginReq{}, func(ctx ActorContext, req *LoginReq) { ... })
-func RegisterFunc[Req any](r *Router, prototype Req, fn func(ActorContext, Req)) {
-	r.Register(prototype, func(ctx ActorContext, msg interface{}) {
+func RegisterFunc[Req any](r *Router, prototype Req, fn func(Context, Req)) {
+	r.Register(prototype, func(ctx Context, msg interface{}) {
 		fn(ctx, msg.(Req))
 	})
 }
 
 // Route dispatches msg to the registered handler based on its concrete type.
 // Returns true if a handler was found and called.
-func (r *Router) Route(ctx ActorContext, msg interface{}) bool {
+func (r *Router) Route(ctx Context, msg interface{}) bool {
 	if r.handlers != nil {
 		if h, ok := r.handlers[reflect.TypeOf(msg)]; ok {
 			h(ctx, msg)

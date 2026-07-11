@@ -1,4 +1,4 @@
-package actor
+package tree
 
 import (
 	"errors"
@@ -18,7 +18,7 @@ type Future struct {
 	resultCh chan FutureResult
 
 	pipeOnce sync.Once
-	pipeSys  *ActorSystem
+	pipeSys  *Tree
 	pipePID  PID
 	pipeTag  interface{}
 	pipeCb   func(interface{}, error) // closure callback
@@ -82,34 +82,20 @@ func (f *Future) AwaitTimeout(d time.Duration) (interface{}, error) {
 }
 
 // Pipe delivers the result as a PipeResult message to the calling actor.
-func (f *Future) Pipe(ctx ActorContext) {
+func (f *Future) Pipe(ctx Context) {
 	f.setupPipe(ctx, nil, nil)
 }
 
 // PipeWithTag is like Pipe but attaches a tag to distinguish responses.
-func (f *Future) PipeWithTag(ctx ActorContext, tag interface{}) {
+func (f *Future) PipeWithTag(ctx Context, tag interface{}) {
 	f.setupPipe(ctx, tag, nil)
 }
 
-// Callback registers a closure that will be executed in the calling actor's
-// goroutine when the response arrives. This is the actor equivalent of
-// chanrpc's AsynCall ?the closure can safely capture local variables and
-// is guaranteed to run in the caller's HandleMessage context.
-//
-// Usage:
-//
-//	ctx.Request(gamePID, &LoginReq{UserID: uid}).Callback(ctx, func(ret interface{}, err error) {
-//	    if err != nil {
-//	        agent.Close()
-//	        return
-//	    }
-//	    agent.WriteMsg(ret)
-//	})
-func (f *Future) Callback(ctx ActorContext, cb func(interface{}, error)) {
+func (f *Future) Callback(ctx Context, cb func(interface{}, error)) {
 	f.setupPipe(ctx, nil, cb)
 }
 
-func (f *Future) setupPipe(ctx ActorContext, tag interface{}, cb func(interface{}, error)) {
+func (f *Future) setupPipe(ctx Context, tag interface{}, cb func(interface{}, error)) {
 	f.pipeOnce.Do(func() {
 		f.pipeSys = ctx.System()
 		f.pipePID = ctx.Self()

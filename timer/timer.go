@@ -1,7 +1,7 @@
 package timer
 
 import (
-	"github.com/gogu-x/bigTree/log"
+	"fmt"
 	"runtime"
 	"time"
 )
@@ -34,7 +34,7 @@ func (t *Timer) Cb() {
 		if r := recover(); r != nil {
 			buf := make([]byte, 4096)
 			l := runtime.Stack(buf, false)
-			log.Error("%v: %s", r, buf[:l])
+			fmt.Println(l)
 		}
 	}()
 

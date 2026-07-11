@@ -1,4 +1,4 @@
-package actor
+package tree
 
 // SpawnOption configures an actor process at spawn time.
 type SpawnOption func(*spawnConfig)
@@ -17,7 +17,6 @@ type spawnConfig struct {
 func defaultSpawnConfig() spawnConfig {
 	return spawnConfig{
 		mailboxSize: 128,
-		logger:      defaultLogger,
 	}
 }
 

@@ -1,4 +1,4 @@
-package actor
+package tree
 
 // Mailbox 为每个 actor 提供消息队列。
 //

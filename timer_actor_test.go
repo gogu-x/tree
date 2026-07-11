@@ -1,4 +1,4 @@
-package actor
+package tree
 
 import (
 	"sync/atomic"
@@ -44,7 +44,7 @@ func (a *serialActor) HandleMessage(ctx ActorContext, msg interface{}) {
 }
 
 func TestTimerSerialWithMessages(t *testing.T) {
-	sys := NewActorSystem()
+	sys := NewTree()
 	defer sys.Shutdown()
 
 	act := &serialActor{done: make(chan struct{})}

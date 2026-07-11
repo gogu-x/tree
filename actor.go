@@ -1,7 +1,5 @@
 // Package actor provides a pragmatic Actor model for building concurrent
-// message-passing systems. It is designed as a lightweight alternative to
-// the chanrpc + skeleton pattern used elsewhere in Leaf.
-package actor
+package tree
 
 import (
 	"fmt"
@@ -11,11 +9,11 @@ import (
 // Actor is the interface all actors must implement.
 type Actor interface {
 	// OnInit is called when the actor starts, before any messages are processed.
-	OnInit(ctx ActorContext)
+	OnInit(ctx Context)
 	// HandleMessage processes a single message sent to this actor.
-	HandleMessage(ctx ActorContext, message interface{})
+	HandleMessage(ctx Context, message interface{})
 	// OnStop is called when the actor is shutting down.
-	OnStop(ctx ActorContext)
+	OnStop(ctx Context)
 }
 
 // PID is the unique address of an actor. It is a value type and can be
@@ -64,5 +62,5 @@ type requestEnvelope struct {
 // timerCallback is delivered to an actor's mailbox when a timer fires,
 // so the callback executes in the same goroutine as HandleMessage.
 type timerCallback struct {
-	cb func(ActorContext)
+	cb func(Context)
 }

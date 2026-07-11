@@ -1,10 +1,10 @@
-package actor
+package tree
 
-// defaultSystem 是进程级全局 ActorSystem 单例。
-var defaultSystem = NewActorSystem()
+// defaultSystem 是进程级全局 Tree 单例。
+var defaultSystem = NewTree()
 
-// Default 返回全局 ActorSystem 单例。
-func Default() *ActorSystem { return defaultSystem }
+// Default 返回全局 Tree 单例。
+func Default() *Tree { return defaultSystem }
 
 // Spawn 在全局系统中注册并启动一个 Actor。
 func Spawn(name string, a Actor, opts ...SpawnOption) PID {

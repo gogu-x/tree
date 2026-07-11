@@ -1,8 +1,7 @@
-package actor
+package tree
 
 import (
 	"fmt"
-	"log"
 	"os"
 	"os/signal"
 	"runtime"
@@ -11,20 +10,11 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/gogu-x/bigTree/timer"
+	"github.com/gogu-x/tree/timer"
 )
 
-// defaultLogger is the fallback logger when no custom logger is provided.
-type stdLogger struct{}
-
-func (l stdLogger) Error(format string, a ...interface{}) {
-	log.Printf("[actor] ERROR: "+format, a...)
-}
-
-var defaultLogger Logger = stdLogger{}
-
-// ActorSystem manages actor lifecycle and message routing.
-type ActorSystem struct {
+// Tree manages actor lifecycle and message routing.
+type Tree struct {
 	// actors 使用 sync.Map：每个 PID 只在 Spawn 时写入一次、退出时删除一次，
 	// 中间被消息投递读取多次。这种「写一次读多次」的模式下，sync.Map 的读路径
 	// 基本无锁（atomic load），避免了 Spawn 写锁阻塞全局消息投递的锁护航问题。
@@ -35,7 +25,8 @@ type ActorSystem struct {
 	count atomic.Int64
 
 	// registry 使用独立的锁，使 name 注册/查找不再与 actor 消息路由互相阻塞。
-	regMu    sync.RWMutex
+	regMu sync.RWMutex
+
 	registry map[string]PID // name → PID registry
 
 	wg sync.WaitGroup
@@ -47,8 +38,8 @@ type ActorSystem struct {
 }
 
 // loadProc 从 actors 表中查找指定 PID 的进程。读路径基本无锁。
-func (sys *ActorSystem) loadProc(pid PID) (*actorProcess, bool) {
-	v, ok := sys.actors.Load(pid)
+func (t *Tree) loadProc(pid PID) (*actorProcess, bool) {
+	v, ok := t.actors.Load(pid)
 	if !ok {
 		return nil, false
 	}
@@ -63,9 +54,9 @@ type actorProcess struct {
 	logger  Logger
 }
 
-// NewActorSystem creates a new empty ActorSystem.
-func NewActorSystem() *ActorSystem {
-	return &ActorSystem{
+// NewTree creates a new empty Tree.
+func NewTree() *Tree {
+	return &Tree{
 		registry:  make(map[string]PID),
 		timeWheel: timer.NewTimeWheel(1024),
 	}
@@ -74,7 +65,7 @@ func NewActorSystem() *ActorSystem {
 // Spawn registers and starts a new actor process. The actor is automatically
 // registered under the given name for Lookup. The returned PID can be used
 // to send messages to the actor.
-func (sys *ActorSystem) Spawn(name string, actor Actor, opts ...SpawnOption) PID {
+func (t *Tree) Spawn(name string, actor Actor, opts ...SpawnOption) PID {
 	cfg := defaultSpawnConfig()
 	for _, o := range opts {
 		o(&cfg)
@@ -90,32 +81,32 @@ func (sys *ActorSystem) Spawn(name string, actor Actor, opts ...SpawnOption) PID
 		logger:  cfg.logger,
 	}
 
-	sys.actors.Store(pid, proc)
-	sys.count.Add(1)
+	t.actors.Store(pid, proc)
+	t.count.Add(1)
 
-	sys.regMu.Lock()
-	sys.registry[name] = pid
-	sys.regMu.Unlock()
+	t.regMu.Lock()
+	t.registry[name] = pid
+	t.regMu.Unlock()
 
-	sys.wg.Add(1)
-	go sys.run(proc)
+	t.wg.Add(1)
+	go t.run(proc)
 
 	return pid
 }
 
 // Lookup returns the PID registered under the given name.
 // Returns a zero PID and false if no actor is registered with that name.
-func (sys *ActorSystem) Lookup(name string) (PID, bool) {
-	sys.regMu.RLock()
-	pid, ok := sys.registry[name]
-	sys.regMu.RUnlock()
+func (t *Tree) Lookup(name string) (PID, bool) {
+	t.regMu.RLock()
+	pid, ok := t.registry[name]
+	t.regMu.RUnlock()
 	return pid, ok
 }
 
 // MustLookup returns the PID registered under the given name.
 // Panics if the name is not found.
-func (sys *ActorSystem) MustLookup(name string) PID {
-	pid, ok := sys.Lookup(name)
+func (t *Tree) MustLookup(name string) PID {
+	pid, ok := t.Lookup(name)
 	if !ok {
 		panic(fmt.Sprintf("actor: name %q not found in registry", name))
 	}
@@ -123,23 +114,23 @@ func (sys *ActorSystem) MustLookup(name string) PID {
 }
 
 // run is the main loop for an actor process.
-func (sys *ActorSystem) run(proc *actorProcess) {
-	defer sys.wg.Done()
+func (t *Tree) run(proc *actorProcess) {
+	defer t.wg.Done()
 	defer func() {
-		sys.actors.Delete(proc.pid)
-		sys.count.Add(-1)
+		t.actors.Delete(proc.pid)
+		t.count.Add(-1)
 		// Clean up registry: only remove if it still points to this PID
 		// (a new actor may have re-registered the same name).
-		sys.regMu.Lock()
-		if regPID, ok := sys.registry[proc.pid.Name]; ok && regPID == proc.pid {
-			delete(sys.registry, proc.pid.Name)
+		t.regMu.Lock()
+		if regPID, ok := t.registry[proc.pid.Name]; ok && regPID == proc.pid {
+			delete(t.registry, proc.pid.Name)
 		}
-		sys.regMu.Unlock()
+		t.regMu.Unlock()
 	}()
 
-	ctx := &localContext{self: proc.pid, system: sys}
+	ctx := &localContext{self: proc.pid, system: t}
 
-	sys.safeCall(proc, func() { proc.actor.OnInit(ctx) })
+	t.safeCall(proc, func() { proc.actor.OnInit(ctx) })
 
 	for {
 		msg := proc.mailbox.Receive()
@@ -147,50 +138,50 @@ func (sys *ActorSystem) run(proc *actorProcess) {
 		switch m := msg.(type) {
 		case systemMessage:
 			if m == systemStop {
-				sys.safeCall(proc, func() { proc.actor.OnStop(ctx) })
+				t.safeCall(proc, func() { proc.actor.OnStop(ctx) })
 				return
 			}
 
 		case pipeCallback:
-			sys.safeCall(proc, func() { m.cb(m.value, m.err) })
+			t.safeCall(proc, func() { m.cb(m.value, m.err) })
 
 		case timerCallback:
-			sys.safeCall(proc, func() { m.cb(ctx) })
+			t.safeCall(proc, func() { m.cb(ctx) })
 
 		case *requestEnvelope:
 			reqCtx := &localContext{
 				self:   proc.pid,
-				system: sys,
+				system: t,
 				sender: m.sender,
 				msg:    m.msg,
 				future: m.future,
 				values: m.values,
 			}
-			sys.safeCall(proc, func() { proc.actor.HandleMessage(reqCtx, m.msg) })
+			t.safeCall(proc, func() { proc.actor.HandleMessage(reqCtx, m.msg) })
 
 		case *messageEnvelope:
 			msgCtx := &localContext{
 				self:   proc.pid,
-				system: sys,
+				system: t,
 				sender: m.sender,
 				msg:    m.msg,
 				values: m.values,
 			}
-			sys.safeCall(proc, func() { proc.actor.HandleMessage(msgCtx, m.msg) })
+			t.safeCall(proc, func() { proc.actor.HandleMessage(msgCtx, m.msg) })
 
 		default:
 			msgCtx := &localContext{
 				self:   proc.pid,
-				system: sys,
+				system: t,
 				msg:    m,
 			}
-			sys.safeCall(proc, func() { proc.actor.HandleMessage(msgCtx, m) })
+			t.safeCall(proc, func() { proc.actor.HandleMessage(msgCtx, m) })
 		}
 	}
 }
 
 // safeCall executes fn with panic recovery.
-func (sys *ActorSystem) safeCall(proc *actorProcess, fn func()) {
+func (t *Tree) safeCall(proc *actorProcess, fn func()) {
 	defer func() {
 		if r := recover(); r != nil {
 			buf := make([]byte, 4096)
@@ -203,16 +194,16 @@ func (sys *ActorSystem) safeCall(proc *actorProcess, fn func()) {
 
 // Send delivers a message to the target actor asynchronously.
 // Returns false if the target PID is not registered.
-func (sys *ActorSystem) Send(pid PID, msg interface{}) bool {
-	return sys.send(pid, msg, PID{})
+func (t *Tree) Send(pid PID, msg interface{}) bool {
+	return t.send(pid, msg, PID{})
 }
 
-func (sys *ActorSystem) send(pid PID, msg interface{}, sender PID) bool {
-	return sys.sendWithValues(pid, msg, sender, nil)
+func (t *Tree) send(pid PID, msg interface{}, sender PID) bool {
+	return t.sendWithValues(pid, msg, sender, nil)
 }
 
-func (sys *ActorSystem) sendWithValues(pid PID, msg interface{}, sender PID, values map[string]interface{}) bool {
-	proc, ok := sys.loadProc(pid)
+func (t *Tree) sendWithValues(pid PID, msg interface{}, sender PID, values map[string]interface{}) bool {
+	proc, ok := t.loadProc(pid)
 	if !ok {
 		return false
 	}
@@ -223,8 +214,8 @@ func (sys *ActorSystem) sendWithValues(pid PID, msg interface{}, sender PID, val
 // sendRaw pushes a message directly into the actor's mailbox without
 // wrapping it in a messageEnvelope. Used for internal message types
 // like pipeCallback that need to be matched directly in the run loop.
-func (sys *ActorSystem) sendRaw(pid PID, msg interface{}) bool {
-	proc, ok := sys.loadProc(pid)
+func (t *Tree) sendRaw(pid PID, msg interface{}) bool {
+	proc, ok := t.loadProc(pid)
 	if !ok {
 		return false
 	}
@@ -234,15 +225,15 @@ func (sys *ActorSystem) sendRaw(pid PID, msg interface{}) bool {
 
 // TrySend delivers a message without blocking. Returns false if the target
 // PID is not registered or the mailbox is full.
-func (sys *ActorSystem) TrySend(pid PID, msg interface{}) bool {
-	return sys.trySend(pid, msg, PID{})
+func (t *Tree) TrySend(pid PID, msg interface{}) bool {
+	return t.trySend(pid, msg, PID{})
 }
 
-func (sys *ActorSystem) trySend(pid PID, msg interface{}, sender PID) bool {
-	return sys.trySendWithValues(pid, msg, sender, nil)
+func (t *Tree) trySend(pid PID, msg interface{}, sender PID) bool {
+	return t.trySendWithValues(pid, msg, sender, nil)
 }
 
-func (sys *ActorSystem) trySendWithValues(pid PID, msg interface{}, sender PID, values map[string]interface{}) bool {
+func (sys *Tree) trySendWithValues(pid PID, msg interface{}, sender PID, values map[string]interface{}) bool {
 	proc, ok := sys.loadProc(pid)
 	if !ok {
 		return false
@@ -253,15 +244,15 @@ func (sys *ActorSystem) trySendWithValues(pid PID, msg interface{}, sender PID, 
 // Request delivers a message to the target actor and returns a Future.
 // If the target PID is not registered, the returned Future is resolved
 // immediately with ErrActorNotFound.
-func (sys *ActorSystem) Request(pid PID, msg interface{}) *Future {
-	return sys.request(pid, msg, PID{})
+func (t *Tree) Request(pid PID, msg interface{}) *Future {
+	return t.request(pid, msg, PID{})
 }
 
-func (sys *ActorSystem) request(pid PID, msg interface{}, sender PID) *Future {
-	return sys.requestWithValues(pid, msg, sender, nil)
+func (t *Tree) request(pid PID, msg interface{}, sender PID) *Future {
+	return t.requestWithValues(pid, msg, sender, nil)
 }
 
-func (sys *ActorSystem) requestWithValues(pid PID, msg interface{}, sender PID, values map[string]interface{}) *Future {
+func (sys *Tree) requestWithValues(pid PID, msg interface{}, sender PID, values map[string]interface{}) *Future {
 	f := NewFuture()
 	proc, ok := sys.loadProc(pid)
 	if !ok {
@@ -273,69 +264,69 @@ func (sys *ActorSystem) requestWithValues(pid PID, msg interface{}, sender PID, 
 }
 
 // stop signals the actor identified by pid to shut down.
-func (sys *ActorSystem) stop(pid PID) {
-	proc, ok := sys.loadProc(pid)
+func (t *Tree) stop(pid PID) {
+	proc, ok := t.loadProc(pid)
 	if ok {
 		proc.mailbox.PushSystem(systemStop)
 	}
 }
 
 // afterFunc schedules cb to be delivered to pid's mailbox after duration d.
-func (sys *ActorSystem) afterFunc(pid PID, d time.Duration, cb func(ActorContext)) *timer.WheelTimer {
-	_, ok := sys.loadProc(pid)
+func (t *Tree) afterFunc(pid PID, d time.Duration, cb func(Context)) *timer.WheelTimer {
+	_, ok := t.loadProc(pid)
 	if !ok {
 		return nil
 	}
-	return sys.timeWheel.AfterFunc(d, func() {
-		sys.sendRaw(pid, timerCallback{cb: cb})
+	return t.timeWheel.AfterFunc(d, func() {
+		t.sendRaw(pid, timerCallback{cb: cb})
 	})
 }
 
 // cronFunc schedules cb to be delivered to pid's mailbox on the cron schedule.
-func (sys *ActorSystem) cronFunc(pid PID, cronExpr *timer.CronExpr, cb func(ActorContext)) *timer.WheelCron {
-	_, ok := sys.loadProc(pid)
+func (t *Tree) cronFunc(pid PID, cronExpr *timer.CronExpr, cb func(Context)) *timer.WheelCron {
+	_, ok := t.loadProc(pid)
 	if !ok {
 		return nil
 	}
-	return sys.timeWheel.CronFunc(cronExpr, func() {
-		sys.sendRaw(pid, timerCallback{cb: cb})
+	return t.timeWheel.CronFunc(cronExpr, func() {
+		t.sendRaw(pid, timerCallback{cb: cb})
 	})
 }
 
 // Shutdown sends a stop signal to all registered actors and waits for them
 // to finish processing.
-func (sys *ActorSystem) Shutdown() {
-	sys.actors.Range(func(_, v interface{}) bool {
+func (t *Tree) Shutdown() {
+	t.actors.Range(func(_, v interface{}) bool {
 		v.(*actorProcess).mailbox.PushSystem(systemStop)
 		return true
 	})
-	sys.wg.Wait()
-	sys.timeWheel.Stop()
+	t.wg.Wait()
+	t.timeWheel.Stop()
 }
 
 // SendCallback 向目标 Actor 投递一个回调，回调在目标 Actor 的 goroutine 内串行执行。
-func (sys *ActorSystem) SendCallback(pid PID, cb func(interface{}, error), value interface{}, err error) bool {
-	return sys.sendRaw(pid, pipeCallback{cb: cb, value: value, err: err})
+func (t *Tree) SendCallback(pid PID, cb func(interface{}, error), value interface{}, err error) bool {
+	return t.sendRaw(pid, pipeCallback{cb: cb, value: value, err: err})
 }
 
 // Register 将 pid 注册到指定 name，用于 Actor 运行时更新自己的可寻址名称。
 // 如果 name 已被其他 PID 占用，会覆盖。
-func (sys *ActorSystem) Register(name string, pid PID) {
-	sys.regMu.Lock()
-	sys.registry[name] = pid
-	sys.regMu.Unlock()
+func (t *Tree) Register(name string, pid PID) {
+	t.regMu.Lock()
+	t.registry[name] = pid
+	t.regMu.Unlock()
 }
 
 // SpawnCount returns the number of currently running actors.
-func (sys *ActorSystem) SpawnCount() int {
-	return int(sys.count.Load())
+func (t *Tree) SpawnCount() int {
+	return int(t.count.Load())
 }
 
 // Start 阻塞运行，监听 OS 关闭信号（Ctrl+C / kill）。
 // 收到信号后优雅关闭所有 Actor，然后返回。
-func (sys *ActorSystem) Start() {
+func (t *Tree) Start() {
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
-	sys.Shutdown()
+	t.Shutdown()
 }

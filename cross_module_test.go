@@ -1,4 +1,4 @@
-package actor
+package tree
 
 import (
 	"fmt"
@@ -135,7 +135,7 @@ func (a *crossDBActor) handleQuery(ctx ActorContext, msg interface{}) {
 // --- Test: three modules, zero PID injection ---
 
 func TestLookupCrossModule(t *testing.T) {
-	sys := NewActorSystem()
+	sys := NewTree()
 
 	// Spawn order doesn't matter for the actors themselves ?	// they discover each other by name at message-processing time.
 	sys.Spawn("db", &crossDBActor{})
@@ -171,7 +171,7 @@ func TestLookupCrossModule(t *testing.T) {
 // --- Test: Lookup returns false for unknown name ---
 
 func TestLookupNotFound(t *testing.T) {
-	sys := NewActorSystem()
+	sys := NewTree()
 	defer sys.Shutdown()
 
 	_, ok := sys.Lookup("nonexistent")
@@ -183,7 +183,7 @@ func TestLookupNotFound(t *testing.T) {
 // --- Test: Registry cleanup after actor stops ---
 
 func TestRegistryCleanupOnStop(t *testing.T) {
-	sys := NewActorSystem()
+	sys := NewTree()
 
 	sys.Spawn("temp", &crossDBActor{})
 
@@ -263,7 +263,7 @@ func (a *crossGameActorV3) HandleMessage(ctx ActorContext, msg interface{}) {
 }
 
 func TestBidirectionalLookup(t *testing.T) {
-	sys := NewActorSystem()
+	sys := NewTree()
 
 	sys.Spawn("game2", &crossGameActorV3{})
 

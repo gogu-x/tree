@@ -1,13 +1,13 @@
-package actor
+package tree
 
 import (
 	"time"
 
-	"github.com/gogu-x/bigTree/timer"
+	"github.com/gogu-x/tree/timer"
 )
 
-// ActorContext provides the message processing context for an Actor.
-type ActorContext interface {
+// Context provides the message processing context for an Actor.
+type Context interface {
 	// Self returns the PID of the current actor.
 	Self() PID
 	// Sender returns the PID of the actor that sent the current message.
@@ -39,22 +39,22 @@ type ActorContext interface {
 	// Register registers the current actor under an additional name.
 	// Useful when the actor's addressable name is known only after initialization (e.g. after login).
 	Register(name string)
-	// System returns the ActorSystem this actor belongs to.
-	System() *ActorSystem
+	// System returns the Tree this actor belongs to.
+	System() *Tree
 	// AfterFunc schedules cb to run in this actor's goroutine after duration d.
-	AfterFunc(d time.Duration, cb func(ActorContext)) *timer.WheelTimer
+	AfterFunc(d time.Duration, cb func(Context)) *timer.WheelTimer
 	// CronFunc schedules cb to run on the cron schedule in this actor's goroutine.
-	CronFunc(cronExpr *timer.CronExpr, cb func(ActorContext)) *timer.WheelCron
+	CronFunc(cronExpr *timer.CronExpr, cb func(Context)) *timer.WheelCron
 	// SetValue stores a user-defined value associated with the given key.
 	SetValue(key string, value interface{})
 	// GetValue retrieves a user-defined value by key. Returns nil if not set.
 	GetValue(key string) interface{}
 }
 
-// localContext implements ActorContext for actors managed by an ActorSystem.
+// localContext implements Context for actors managed by an Tree.
 type localContext struct {
 	self   PID
-	system *ActorSystem
+	system *Tree
 	sender PID
 	msg    interface{}
 	future *Future
@@ -65,11 +65,11 @@ func (c *localContext) Self() PID            { return c.self }
 func (c *localContext) Sender() PID          { return c.sender }
 func (c *localContext) Message() interface{} { return c.msg }
 func (c *localContext) Future() *Future      { return c.future }
-func (c *localContext) System() *ActorSystem { return c.system }
-func (c *localContext) AfterFunc(d time.Duration, cb func(ActorContext)) *timer.WheelTimer {
+func (c *localContext) System() *Tree        { return c.system }
+func (c *localContext) AfterFunc(d time.Duration, cb func(Context)) *timer.WheelTimer {
 	return c.system.afterFunc(c.self, d, cb)
 }
-func (c *localContext) CronFunc(cronExpr *timer.CronExpr, cb func(ActorContext)) *timer.WheelCron {
+func (c *localContext) CronFunc(cronExpr *timer.CronExpr, cb func(Context)) *timer.WheelCron {
 	return c.system.cronFunc(c.self, cronExpr, cb)
 }
 func (c *localContext) Send(pid PID, msg interface{}) bool {

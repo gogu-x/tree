@@ -1,4 +1,4 @@
-package actor
+package tree
 
 import (
 	"fmt"
@@ -15,10 +15,10 @@ type echoActor struct {
 	msgCh chan interface{}
 }
 
-func (a *echoActor) OnInit(ctx ActorContext) {}
-func (a *echoActor) OnStop(ctx ActorContext) {}
+func (a *echoActor) OnInit(ctx Context) {}
+func (a *echoActor) OnStop(ctx Context) {}
 
-func (a *echoActor) HandleMessage(ctx ActorContext, msg interface{}) {
+func (a *echoActor) HandleMessage(ctx Context, msg interface{}) {
 	switch m := msg.(type) {
 	case string:
 		a.msgCh <- m
@@ -26,7 +26,7 @@ func (a *echoActor) HandleMessage(ctx ActorContext, msg interface{}) {
 }
 
 func TestSpawnAndSend(t *testing.T) {
-	sys := NewActorSystem()
+	sys := NewTree()
 	defer sys.Shutdown()
 
 	msgCh := make(chan interface{}, 1)
@@ -52,7 +52,7 @@ func TestSpawnAndSend(t *testing.T) {
 // --- Test: Send to unknown PID returns false ---
 
 func TestSendUnknownPID(t *testing.T) {
-	sys := NewActorSystem()
+	sys := NewTree()
 	defer sys.Shutdown()
 
 	fakePID := PID{ID: 99999, Name: "ghost"}
@@ -64,7 +64,7 @@ func TestSendUnknownPID(t *testing.T) {
 // --- Test: TrySend ---
 
 func TestTrySend(t *testing.T) {
-	sys := NewActorSystem()
+	sys := NewTree()
 	defer sys.Shutdown()
 
 	msgCh := make(chan interface{}, 1)
@@ -93,10 +93,10 @@ func (a *pingActor) Name() {
 	panic("implement me")
 }
 
-func (a *pingActor) OnInit(ctx ActorContext) {}
-func (a *pingActor) OnStop(ctx ActorContext) {}
+func (a *pingActor) OnInit(ctx Context) {}
+func (a *pingActor) OnStop(ctx Context) {}
 
-func (a *pingActor) HandleMessage(ctx ActorContext, msg interface{}) {
+func (a *pingActor) HandleMessage(ctx Context, msg interface{}) {
 	switch msg.(type) {
 	case string:
 		ctx.Response("pong", nil)
@@ -104,7 +104,7 @@ func (a *pingActor) HandleMessage(ctx ActorContext, msg interface{}) {
 }
 
 func TestRequestResponse(t *testing.T) {
-	sys := NewActorSystem()
+	sys := NewTree()
 	defer sys.Shutdown()
 
 	pid := sys.Spawn("ping", &pingActor{t: t})
@@ -130,20 +130,20 @@ func (a *stopActor) Name() {
 	panic("implement me")
 }
 
-func (a *stopActor) OnInit(ctx ActorContext) {}
-func (a *stopActor) OnStop(ctx ActorContext) {
+func (a *stopActor) OnInit(ctx Context) {}
+func (a *stopActor) OnStop(ctx Context) {
 	a.mu.Lock()
 	a.stopped = true
 	a.mu.Unlock()
 }
-func (a *stopActor) HandleMessage(ctx ActorContext, msg interface{}) {
+func (a *stopActor) HandleMessage(ctx Context, msg interface{}) {
 	if _, ok := msg.(string); ok {
 		ctx.Stop()
 	}
 }
 
 func TestActorStop(t *testing.T) {
-	sys := NewActorSystem()
+	sys := NewTree()
 	a := &stopActor{}
 	pid := sys.Spawn("stop", a)
 
@@ -162,7 +162,7 @@ func TestActorStop(t *testing.T) {
 // --- Test: System Shutdown ---
 
 func TestSystemShutdown(t *testing.T) {
-	sys := NewActorSystem()
+	sys := NewTree()
 
 	pid := sys.Spawn("worker", &echoActor{
 		t:     t,
@@ -205,10 +205,10 @@ func (a *requesterActor) Name() {
 	panic("implement me")
 }
 
-func (a *requesterActor) OnInit(ctx ActorContext) {}
-func (a *requesterActor) OnStop(ctx ActorContext) {}
+func (a *requesterActor) OnInit(ctx Context) {}
+func (a *requesterActor) OnStop(ctx Context) {}
 
-func (a *requesterActor) HandleMessage(ctx ActorContext, msg interface{}) {
+func (a *requesterActor) HandleMessage(ctx Context, msg interface{}) {
 	switch m := msg.(type) {
 	case string:
 		ctx.Request(a.target, m).Pipe(ctx)
@@ -218,7 +218,7 @@ func (a *requesterActor) HandleMessage(ctx ActorContext, msg interface{}) {
 }
 
 func TestPipe(t *testing.T) {
-	sys := NewActorSystem()
+	sys := NewTree()
 	defer sys.Shutdown()
 
 	target := sys.Spawn("target", &pingActor{t: t})
@@ -257,10 +257,10 @@ func (a *multiRequestActor) Name() {
 	panic("implement me")
 }
 
-func (a *multiRequestActor) OnInit(ctx ActorContext) {}
-func (a *multiRequestActor) OnStop(ctx ActorContext) {}
+func (a *multiRequestActor) OnInit(ctx Context) {}
+func (a *multiRequestActor) OnStop(ctx Context) {}
 
-func (a *multiRequestActor) HandleMessage(ctx ActorContext, msg interface{}) {
+func (a *multiRequestActor) HandleMessage(ctx Context, msg interface{}) {
 	switch m := msg.(type) {
 	case string:
 		if m == "go" {
@@ -273,7 +273,7 @@ func (a *multiRequestActor) HandleMessage(ctx ActorContext, msg interface{}) {
 }
 
 func TestPipeWithTag(t *testing.T) {
-	sys := NewActorSystem()
+	sys := NewTree()
 	defer sys.Shutdown()
 
 	targetA := sys.Spawn("targetA", &pingActor{t: t})
@@ -324,32 +324,32 @@ func (a *gameActor) Name() {
 	panic("implement me")
 }
 
-func (a *gameActor) OnInit(ctx ActorContext) {
+func (a *gameActor) OnInit(ctx Context) {
 	a.router.Register(&LoginRequest{}, a.handleLogin)
 	a.router.Register(&MoveRequest{}, a.handleMove)
-	a.router.SetFallback(func(ctx ActorContext, msg interface{}) {
+	a.router.SetFallback(func(ctx Context, msg interface{}) {
 		a.resultCh <- "fallback"
 	})
 }
 
-func (a *gameActor) OnStop(ctx ActorContext) {}
+func (a *gameActor) OnStop(ctx Context) {}
 
-func (a *gameActor) HandleMessage(ctx ActorContext, msg interface{}) {
+func (a *gameActor) HandleMessage(ctx Context, msg interface{}) {
 	a.router.Route(ctx, msg)
 }
 
-func (a *gameActor) handleLogin(ctx ActorContext, msg interface{}) {
+func (a *gameActor) handleLogin(ctx Context, msg interface{}) {
 	req := msg.(*LoginRequest)
 	a.resultCh <- "login:" + req.User
 }
 
-func (a *gameActor) handleMove(ctx ActorContext, msg interface{}) {
+func (a *gameActor) handleMove(ctx Context, msg interface{}) {
 	req := msg.(*MoveRequest)
 	a.resultCh <- fmt.Sprintf("move:%d,%d", req.X, req.Y)
 }
 
 func TestRouter(t *testing.T) {
-	sys := NewActorSystem()
+	sys := NewTree()
 	defer sys.Shutdown()
 
 	resultCh := make(chan string, 3)
@@ -384,10 +384,10 @@ func (a *callbackActor) Name() {
 	panic("implement me")
 }
 
-func (a *callbackActor) OnInit(ctx ActorContext) {}
-func (a *callbackActor) OnStop(ctx ActorContext) {}
+func (a *callbackActor) OnInit(ctx Context) {}
+func (a *callbackActor) OnStop(ctx Context) {}
 
-func (a *callbackActor) HandleMessage(ctx ActorContext, msg interface{}) {
+func (a *callbackActor) HandleMessage(ctx Context, msg interface{}) {
 	switch m := msg.(type) {
 	case string:
 		userID := m // captured by closure
@@ -399,7 +399,7 @@ func (a *callbackActor) HandleMessage(ctx ActorContext, msg interface{}) {
 }
 
 func TestCallback(t *testing.T) {
-	sys := NewActorSystem()
+	sys := NewTree()
 	defer sys.Shutdown()
 
 	target := sys.Spawn("ping", &pingActor{t: t})
@@ -434,10 +434,10 @@ func (a *multiCallbackActor) Name() {
 	panic("implement me")
 }
 
-func (a *multiCallbackActor) OnInit(ctx ActorContext) {}
-func (a *multiCallbackActor) OnStop(ctx ActorContext) {}
+func (a *multiCallbackActor) OnInit(ctx Context) {}
+func (a *multiCallbackActor) OnStop(ctx Context) {}
 
-func (a *multiCallbackActor) HandleMessage(ctx ActorContext, msg interface{}) {
+func (a *multiCallbackActor) HandleMessage(ctx Context, msg interface{}) {
 	switch msg.(type) {
 	case string:
 		// Two concurrent requests with different closures
@@ -451,7 +451,7 @@ func (a *multiCallbackActor) HandleMessage(ctx ActorContext, msg interface{}) {
 }
 
 func TestMultipleCallbacks(t *testing.T) {
-	sys := NewActorSystem()
+	sys := NewTree()
 	defer sys.Shutdown()
 
 	target := sys.Spawn("ping", &pingActor{t: t})
