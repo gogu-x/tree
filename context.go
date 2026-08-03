@@ -22,14 +22,19 @@ type Context interface {
 	// TrySend delivers a message without blocking. Returns false if the
 	// target PID is not registered or the mailbox is full.
 	TrySend(pid PID, msg interface{}) bool
-	// Request delivers a message to the target actor and returns a Future.
-	Request(pid PID, msg interface{}) *Future
+	// Request delivers a message to the target actor and returns an Envelope
+	// for synchronous waiting (Await/AwaitTimeout).
+	Request(pid PID, msg interface{}) *Envelope
+	// RequestCallback delivers a message to the target actor; cb is invoked
+	// in this actor's goroutine (with this actor's Context) once the target
+	// responds.
+	RequestCallback(pid PID, msg interface{}, cb func(Context, interface{}, error)) *Envelope
 	// Response sends a reply for the current request. If the current message
-	// was not sent via Request, this is a no-op.
+	// was not sent via Request/RequestCallback, this is a no-op.
 	Response(value interface{}, err error)
-	// Future returns the pending Future for the current request message.
-	// Returns nil if the current message was not sent via Request.
-	Future() *Future
+	// RequestEnvelope returns the pending request Envelope for the current
+	// message. Returns nil if the current message was not sent via Request.
+	RequestEnvelope() *Envelope
 	// Stop signals the current actor to shut down after processing the
 	// current message.
 	Stop()
@@ -53,19 +58,19 @@ type Context interface {
 
 // localContext implements Context for actors managed by an Tree.
 type localContext struct {
-	self   PID
-	system *Tree
-	sender PID
-	msg    interface{}
-	future *Future
-	values map[string]interface{}
+	self    PID
+	system  *Tree
+	sender  PID
+	msg     interface{}
+	request *Envelope
+	values  map[string]interface{}
 }
 
-func (c *localContext) Self() PID            { return c.self }
-func (c *localContext) Sender() PID          { return c.sender }
-func (c *localContext) Message() interface{} { return c.msg }
-func (c *localContext) Future() *Future      { return c.future }
-func (c *localContext) System() *Tree        { return c.system }
+func (c *localContext) Self() PID                  { return c.self }
+func (c *localContext) Sender() PID                { return c.sender }
+func (c *localContext) Message() interface{}       { return c.msg }
+func (c *localContext) RequestEnvelope() *Envelope { return c.request }
+func (c *localContext) System() *Tree              { return c.system }
 func (c *localContext) AfterFunc(d time.Duration, cb func(Context)) *timer.WheelTimer {
 	return c.system.afterFunc(c.self, d, cb)
 }
@@ -79,13 +84,16 @@ func (c *localContext) TrySend(pid PID, msg interface{}) bool {
 	return c.system.trySendWithValues(pid, msg, c.self, c.values)
 }
 func (c *localContext) Response(value interface{}, err error) {
-	if c.future != nil {
-		c.future.Respond(value, err)
+	if c.request != nil {
+		c.request.Respond(value, err)
 	}
 }
 func (c *localContext) Stop() { c.system.stop(c.self) }
-func (c *localContext) Request(pid PID, msg interface{}) *Future {
-	return c.system.requestWithValues(pid, msg, c.self, c.values)
+func (c *localContext) Request(pid PID, msg interface{}) *Envelope {
+	return c.system.requestWithValues(pid, msg, c.self, c.values, nil)
+}
+func (c *localContext) RequestCallback(pid PID, msg interface{}, cb func(Context, interface{}, error)) *Envelope {
+	return c.system.requestWithValues(pid, msg, c.self, c.values, cb)
 }
 func (c *localContext) Lookup(name string) (PID, bool) {
 	return c.system.Lookup(name)

@@ -8,12 +8,25 @@ import (
 
 // Actor is the interface all actors must implement.
 type Actor interface {
+	Name() string
 	// OnInit is called when the actor starts, before any messages are processed.
 	OnInit(ctx Context)
 	// HandleMessage processes a single message sent to this actor.
 	HandleMessage(ctx Context, message interface{})
 	// OnStop is called when the actor is shutting down.
 	OnStop(ctx Context)
+}
+
+// MailboxSizer is an optional interface an Actor may implement to override
+// the default user-message buffer size of its mailbox.
+type MailboxSizer interface {
+	MailboxSize() int
+}
+
+// LoggerProvider is an optional interface an Actor may implement to override
+// the logger used to report panics raised by its own callbacks.
+type LoggerProvider interface {
+	Logger() Logger
 }
 
 // PID is the unique address of an actor. It is a value type and can be
@@ -42,25 +55,3 @@ type systemMessage int
 const (
 	systemStop systemMessage = iota
 )
-
-// messageEnvelope wraps a user message with sender information.
-type messageEnvelope struct {
-	msg    interface{}
-	sender PID
-	values map[string]interface{}
-}
-
-// requestEnvelope wraps a user message with sender information and a Future
-// for request/response patterns.
-type requestEnvelope struct {
-	msg    interface{}
-	sender PID
-	future *Future
-	values map[string]interface{}
-}
-
-// timerCallback is delivered to an actor's mailbox when a timer fires,
-// so the callback executes in the same goroutine as HandleMessage.
-type timerCallback struct {
-	cb func(Context)
-}

@@ -62,36 +62,73 @@ func NewTree() *Tree {
 	}
 }
 
-// Spawn registers and starts a new actor process. The actor is automatically
-// registered under the given name for Lookup. The returned PID can be used
-// to send messages to the actor.
-func (t *Tree) Spawn(name string, actor Actor, opts ...SpawnOption) PID {
-	cfg := defaultSpawnConfig()
-	for _, o := range opts {
-		o(&cfg)
+// Spawn 注册并启动一批 Actor，返回与入参顺序一致的 PID 列表。
+//
+// 名字取自 Actor.Name()，分两个阶段启动：
+//
+//  1. 为全部 Actor 分配 PID、创建 mailbox 并写入 registry；
+//  2. 启动各自的 goroutine，先执行 OnInit，等本批次所有 OnInit
+//     都返回后，才进入消息循环消费 mailbox。
+//
+// 由此得到两个保证：
+//   - 同一批 Actor 的 OnInit 里可以互相 Lookup / Send，与传入顺序无关；
+//   - 任何 Actor 处理第一条消息时，本批次所有 Actor 都已初始化完毕。
+//
+// 注意：OnInit 内不要同步等待（Envelope.Await）同批次其他 Actor 的回复，
+// 对方此时尚未开始消费 mailbox，会一直等到超时。跨 Actor 的初始化交互
+// 请用异步 Send，或延后到第一条消息再做。
+func (t *Tree) Spawn(actors ...Actor) []PID {
+	if len(actors) == 0 {
+		return nil
 	}
 
-	pid := allocatePID(name)
-	mb := NewMailbox(cfg.mailboxSize)
+	pids := make([]PID, len(actors))
+	procs := make([]*actorProcess, len(actors))
 
-	proc := &actorProcess{
-		pid:     pid,
-		actor:   actor,
-		mailbox: mb,
-		logger:  cfg.logger,
+	// 阶段一：分配并注册。全部注册完成后才启动 goroutine。
+	for i, a := range actors {
+		if a == nil {
+			panic("tree: Spawn called with nil actor")
+		}
+		name := a.Name()
+		if name == "" {
+			panic(fmt.Sprintf("tree: actor %T returned an empty Name()", a))
+		}
+
+		pid := allocatePID(name)
+		proc := &actorProcess{
+			pid:     pid,
+			actor:   a,
+			mailbox: NewMailbox(mailboxSizeOf(a)),
+			logger:  loggerOf(a),
+		}
+
+		t.actors.Store(pid, proc)
+		t.count.Add(1)
+
+		t.regMu.Lock()
+		t.registry[name] = pid
+		t.regMu.Unlock()
+
+		pids[i] = pid
+		procs[i] = proc
 	}
 
-	t.actors.Store(pid, proc)
-	t.count.Add(1)
+	// 阶段二：启动 goroutine，用 WaitGroup 做一次性屏障。
+	var initBarrier sync.WaitGroup
+	initBarrier.Add(len(procs))
+	for _, proc := range procs {
+		t.wg.Add(1)
+		go t.run(proc, &initBarrier)
+	}
 
-	t.regMu.Lock()
-	t.registry[name] = pid
-	t.regMu.Unlock()
+	return pids
+}
 
-	t.wg.Add(1)
-	go t.run(proc)
-
-	return pid
+// SpawnOne 启动单个 Actor 并返回其 PID，等价于 Spawn(a)[0]。
+// 用于运行时按需创建的 Actor（如每个连接、每个玩家一个）。
+func (t *Tree) SpawnOne(a Actor) PID {
+	return t.Spawn(a)[0]
 }
 
 // Lookup returns the PID registered under the given name.
@@ -114,7 +151,9 @@ func (t *Tree) MustLookup(name string) PID {
 }
 
 // run is the main loop for an actor process.
-func (t *Tree) run(proc *actorProcess) {
+// initBarrier 用于两阶段启动：OnInit 执行完先 Done，再 Wait 等齐同批次
+// 其他 Actor，之后才开始消费 mailbox。
+func (t *Tree) run(proc *actorProcess, initBarrier *sync.WaitGroup) {
 	defer t.wg.Done()
 	defer func() {
 		t.actors.Delete(proc.pid)
@@ -132,50 +171,47 @@ func (t *Tree) run(proc *actorProcess) {
 
 	t.safeCall(proc, func() { proc.actor.OnInit(ctx) })
 
-	for {
-		msg := proc.mailbox.Receive()
+	if initBarrier != nil {
+		initBarrier.Done()
+		initBarrier.Wait()
+	}
 
-		switch m := msg.(type) {
-		case systemMessage:
-			if m == systemStop {
+	for {
+		env := proc.mailbox.Receive()
+
+		switch env.Kind {
+		case kindSystem:
+			if env.sys == systemStop {
 				t.safeCall(proc, func() { proc.actor.OnStop(ctx) })
 				return
 			}
 
-		case pipeCallback:
-			t.safeCall(proc, func() { m.cb(m.value, m.err) })
+		case kindCallback:
+			t.safeCall(proc, func() { env.cb(ctx, env.value, env.err) })
 
-		case timerCallback:
-			t.safeCall(proc, func() { m.cb(ctx) })
+		case kindTimer:
+			t.safeCall(proc, func() { env.value.(func(Context))(ctx) })
 
-		case *requestEnvelope:
+		case kindRequest:
 			reqCtx := &localContext{
-				self:   proc.pid,
-				system: t,
-				sender: m.sender,
-				msg:    m.msg,
-				future: m.future,
-				values: m.values,
+				self:    proc.pid,
+				system:  t,
+				sender:  env.Sender,
+				msg:     env.Msg,
+				request: env,
+				values:  env.Values,
 			}
-			t.safeCall(proc, func() { proc.actor.HandleMessage(reqCtx, m.msg) })
+			t.safeCall(proc, func() { proc.actor.HandleMessage(reqCtx, env.Msg) })
 
-		case *messageEnvelope:
+		default: // kindUser
 			msgCtx := &localContext{
 				self:   proc.pid,
 				system: t,
-				sender: m.sender,
-				msg:    m.msg,
-				values: m.values,
+				sender: env.Sender,
+				msg:    env.Msg,
+				values: env.Values,
 			}
-			t.safeCall(proc, func() { proc.actor.HandleMessage(msgCtx, m.msg) })
-
-		default:
-			msgCtx := &localContext{
-				self:   proc.pid,
-				system: t,
-				msg:    m,
-			}
-			t.safeCall(proc, func() { proc.actor.HandleMessage(msgCtx, m) })
+			t.safeCall(proc, func() { proc.actor.HandleMessage(msgCtx, env.Msg) })
 		}
 	}
 }
@@ -207,19 +243,21 @@ func (t *Tree) sendWithValues(pid PID, msg interface{}, sender PID, values map[s
 	if !ok {
 		return false
 	}
-	proc.mailbox.PushUser(&messageEnvelope{msg: msg, sender: sender, values: values})
+	proc.mailbox.PushUser(NewEnvelope(msg, sender, values))
 	return true
 }
 
-// sendRaw pushes a message directly into the actor's mailbox without
-// wrapping it in a messageEnvelope. Used for internal message types
-// like pipeCallback that need to be matched directly in the run loop.
-func (t *Tree) sendRaw(pid PID, msg interface{}) bool {
+// sendCallback pushes a kindCallback envelope directly into the actor's
+// mailbox, to be executed in its goroutine with that actor's Context.
+// Used internally to deliver request results back to the requester when a
+// callback was given to NewRequest/RequestCallback. Returns false (and does
+// not execute cb) if pid is not a live actor, since cb requires a Context.
+func (t *Tree) sendCallback(pid PID, cb func(Context, interface{}, error), value interface{}, err error) bool {
 	proc, ok := t.loadProc(pid)
 	if !ok {
 		return false
 	}
-	proc.mailbox.PushUser(msg)
+	proc.mailbox.PushUser(&Envelope{Kind: kindCallback, cb: cb, value: value, err: err})
 	return true
 }
 
@@ -238,36 +276,46 @@ func (sys *Tree) trySendWithValues(pid PID, msg interface{}, sender PID, values 
 	if !ok {
 		return false
 	}
-	return proc.mailbox.TryPushUser(&messageEnvelope{msg: msg, sender: sender, values: values})
+	return proc.mailbox.TryPushUser(NewEnvelope(msg, sender, values))
 }
 
-// Request delivers a message to the target actor and returns a Future.
-// If the target PID is not registered, the returned Future is resolved
-// immediately with ErrActorNotFound.
-func (t *Tree) Request(pid PID, msg interface{}) *Future {
-	return t.request(pid, msg, PID{})
+// Request delivers a message to the target actor and returns an Envelope
+// for synchronous Await/AwaitTimeout. If the target PID is not registered,
+// the returned Envelope is resolved immediately with ErrActorNotFound.
+func (t *Tree) Request(pid PID, msg interface{}) *Envelope {
+	return t.request(pid, msg, PID{}, nil)
 }
 
-func (t *Tree) request(pid PID, msg interface{}, sender PID) *Future {
-	return t.requestWithValues(pid, msg, sender, nil)
+// RequestCallback delivers a message to the target actor; when the target
+// responds, cb is invoked in sender's goroutine with sender's Context
+// (sender must be a live actor's PID — otherwise cb is silently dropped,
+// see sendCallback).
+func (t *Tree) RequestCallback(pid PID, msg interface{}, sender PID, cb func(Context, interface{}, error)) *Envelope {
+	return t.request(pid, msg, sender, cb)
 }
 
-func (sys *Tree) requestWithValues(pid PID, msg interface{}, sender PID, values map[string]interface{}) *Future {
-	f := NewFuture()
+func (t *Tree) request(pid PID, msg interface{}, sender PID, cb func(Context, interface{}, error)) *Envelope {
+	return t.requestWithValues(pid, msg, sender, nil, cb)
+}
+
+func (sys *Tree) requestWithValues(pid PID, msg interface{}, sender PID, values map[string]interface{}, cb func(Context, interface{}, error)) *Envelope {
+	env := NewRequest(msg, sender, values, cb)
+	env.pipeSys = sys
+	env.pipePID = sender
 	proc, ok := sys.loadProc(pid)
 	if !ok {
-		f.Respond(nil, ErrActorNotFound)
-		return f
+		env.Respond(nil, ErrActorNotFound)
+		return env
 	}
-	proc.mailbox.PushUser(&requestEnvelope{msg: msg, sender: sender, future: f, values: values})
-	return f
+	proc.mailbox.PushUser(env)
+	return env
 }
 
 // stop signals the actor identified by pid to shut down.
 func (t *Tree) stop(pid PID) {
 	proc, ok := t.loadProc(pid)
 	if ok {
-		proc.mailbox.PushSystem(systemStop)
+		proc.mailbox.PushSystem(&Envelope{Kind: kindSystem, sys: systemStop})
 	}
 }
 
@@ -278,7 +326,7 @@ func (t *Tree) afterFunc(pid PID, d time.Duration, cb func(Context)) *timer.Whee
 		return nil
 	}
 	return t.timeWheel.AfterFunc(d, func() {
-		t.sendRaw(pid, timerCallback{cb: cb})
+		t.sendTimer(pid, cb)
 	})
 }
 
@@ -289,24 +337,35 @@ func (t *Tree) cronFunc(pid PID, cronExpr *timer.CronExpr, cb func(Context)) *ti
 		return nil
 	}
 	return t.timeWheel.CronFunc(cronExpr, func() {
-		t.sendRaw(pid, timerCallback{cb: cb})
+		t.sendTimer(pid, cb)
 	})
+}
+
+// sendTimer pushes a kindTimer envelope carrying cb into pid's mailbox.
+func (t *Tree) sendTimer(pid PID, cb func(Context)) bool {
+	proc, ok := t.loadProc(pid)
+	if !ok {
+		return false
+	}
+	proc.mailbox.PushUser(&Envelope{Kind: kindTimer, value: cb})
+	return true
 }
 
 // Shutdown sends a stop signal to all registered actors and waits for them
 // to finish processing.
 func (t *Tree) Shutdown() {
 	t.actors.Range(func(_, v interface{}) bool {
-		v.(*actorProcess).mailbox.PushSystem(systemStop)
+		v.(*actorProcess).mailbox.PushSystem(&Envelope{Kind: kindSystem, sys: systemStop})
 		return true
 	})
 	t.wg.Wait()
 	t.timeWheel.Stop()
 }
 
-// SendCallback 向目标 Actor 投递一个回调，回调在目标 Actor 的 goroutine 内串行执行。
-func (t *Tree) SendCallback(pid PID, cb func(interface{}, error), value interface{}, err error) bool {
-	return t.sendRaw(pid, pipeCallback{cb: cb, value: value, err: err})
+// SendCallback 向目标 Actor 投递一个回调，回调在目标 Actor 的 goroutine 内
+// 串行执行，并携带该 Actor 的 Context。
+func (t *Tree) SendCallback(pid PID, cb func(Context, interface{}, error), value interface{}, err error) bool {
+	return t.sendCallback(pid, cb, value, err)
 }
 
 // Register 将 pid 注册到指定 name，用于 Actor 运行时更新自己的可寻址名称。
