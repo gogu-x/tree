@@ -20,7 +20,6 @@ const (
 	kindRequest                      // 需要回复的请求（同步 Await 或异步回调）
 	kindSystem                       // 系统消息（生命周期）
 	kindCallback                     // 结果回调：在目标 actor goroutine 内执行 cb
-	kindTimer                        // 定时器回调：在目标 actor goroutine 内执行 cb
 )
 
 // FutureResult holds the value and error produced by the responding actor.
@@ -38,8 +37,8 @@ type FutureResult struct {
 //   - 请求/响应：NewRequest(msg, sender, values, cb)，Kind = kindRequest；
 //     cb 为 nil 时调用方用 Await()/AwaitTimeout() 同步阻塞等待；
 //     cb 非 nil 时结果就绪后以异步回调方式在调用方 actor 的 goroutine 内执行。
-//   - 回调/定时器：内部使用，Kind = kindCallback / kindTimer，直接携带
-//     待执行的闭包，在 run 循环内被识别并调用。
+//   - 回调：内部使用，Kind = kindCallback，直接携带待执行的闭包，
+//     在 run 循环内被识别并调用。
 type Envelope struct {
 	Msg    interface{} // 输入消息
 	Sender PID
@@ -55,7 +54,7 @@ type Envelope struct {
 	// ---- 系统消息 ----
 	sys systemMessage
 
-	// ---- 定时器/回调载荷 ----
+	// ---- 回调载荷 ----
 	value interface{}
 	err   error
 

@@ -8,9 +8,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"syscall"
-	"time"
-
-	"github.com/gogu-x/tree/timer"
 )
 
 // Tree manages actor lifecycle and message routing.
@@ -30,11 +27,6 @@ type Tree struct {
 	registry map[string]PID // name → PID registry
 
 	wg sync.WaitGroup
-
-	// timeWheel 是系统级共享时间轮，所有 actor 共用，避免每个 actor 独立创建
-	// 带来的 2个goroutine + 1024个list.List 的巨大开销。
-	// AfterFunc 通过 channel 提交，goroutine-safe，回调仍投递到各自 actor 的 mailbox。
-	timeWheel *timer.TimeWheel
 }
 
 // loadProc 从 actors 表中查找指定 PID 的进程。读路径基本无锁。
@@ -57,8 +49,7 @@ type actorProcess struct {
 // NewTree creates a new empty Tree.
 func NewTree() *Tree {
 	return &Tree{
-		registry:  make(map[string]PID),
-		timeWheel: timer.NewTimeWheel(1024),
+		registry: make(map[string]PID),
 	}
 }
 
@@ -189,9 +180,6 @@ func (t *Tree) run(proc *actorProcess, initBarrier *sync.WaitGroup) {
 		case kindCallback:
 			t.safeCall(proc, func() { env.cb(ctx, env.value, env.err) })
 
-		case kindTimer:
-			t.safeCall(proc, func() { env.value.(func(Context))(ctx) })
-
 		case kindRequest:
 			reqCtx := &localContext{
 				self:    proc.pid,
@@ -319,38 +307,6 @@ func (t *Tree) stop(pid PID) {
 	}
 }
 
-// afterFunc schedules cb to be delivered to pid's mailbox after duration d.
-func (t *Tree) afterFunc(pid PID, d time.Duration, cb func(Context)) *timer.WheelTimer {
-	_, ok := t.loadProc(pid)
-	if !ok {
-		return nil
-	}
-	return t.timeWheel.AfterFunc(d, func() {
-		t.sendTimer(pid, cb)
-	})
-}
-
-// cronFunc schedules cb to be delivered to pid's mailbox on the cron schedule.
-func (t *Tree) cronFunc(pid PID, cronExpr *timer.CronExpr, cb func(Context)) *timer.WheelCron {
-	_, ok := t.loadProc(pid)
-	if !ok {
-		return nil
-	}
-	return t.timeWheel.CronFunc(cronExpr, func() {
-		t.sendTimer(pid, cb)
-	})
-}
-
-// sendTimer pushes a kindTimer envelope carrying cb into pid's mailbox.
-func (t *Tree) sendTimer(pid PID, cb func(Context)) bool {
-	proc, ok := t.loadProc(pid)
-	if !ok {
-		return false
-	}
-	proc.mailbox.PushUser(&Envelope{Kind: kindTimer, value: cb})
-	return true
-}
-
 // Shutdown sends a stop signal to all registered actors and waits for them
 // to finish processing.
 func (t *Tree) Shutdown() {
@@ -359,7 +315,6 @@ func (t *Tree) Shutdown() {
 		return true
 	})
 	t.wg.Wait()
-	t.timeWheel.Stop()
 }
 
 // SendCallback 向目标 Actor 投递一个回调，回调在目标 Actor 的 goroutine 内

@@ -2,7 +2,7 @@ package timer_test
 
 import (
 	"fmt"
-	"goAcotr/timer"
+	"github.com/gogu-x/tree/timer"
 	"time"
 )
 

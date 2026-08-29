@@ -1,11 +1,5 @@
 package tree
 
-import (
-	"time"
-
-	"github.com/gogu-x/tree/timer"
-)
-
 // Context provides the message processing context for an Actor.
 type Context interface {
 	// Self returns the PID of the current actor.
@@ -46,10 +40,6 @@ type Context interface {
 	Register(name string)
 	// System returns the Tree this actor belongs to.
 	System() *Tree
-	// AfterFunc schedules cb to run in this actor's goroutine after duration d.
-	AfterFunc(d time.Duration, cb func(Context)) *timer.WheelTimer
-	// CronFunc schedules cb to run on the cron schedule in this actor's goroutine.
-	CronFunc(cronExpr *timer.CronExpr, cb func(Context)) *timer.WheelCron
 	// SetValue stores a user-defined value associated with the given key.
 	SetValue(key string, value interface{})
 	// GetValue retrieves a user-defined value by key. Returns nil if not set.
@@ -71,12 +61,6 @@ func (c *localContext) Sender() PID                { return c.sender }
 func (c *localContext) Message() interface{}       { return c.msg }
 func (c *localContext) RequestEnvelope() *Envelope { return c.request }
 func (c *localContext) System() *Tree              { return c.system }
-func (c *localContext) AfterFunc(d time.Duration, cb func(Context)) *timer.WheelTimer {
-	return c.system.afterFunc(c.self, d, cb)
-}
-func (c *localContext) CronFunc(cronExpr *timer.CronExpr, cb func(Context)) *timer.WheelCron {
-	return c.system.cronFunc(c.self, cronExpr, cb)
-}
 func (c *localContext) Send(pid PID, msg interface{}) bool {
 	return c.system.sendWithValues(pid, msg, c.self, c.values)
 }
