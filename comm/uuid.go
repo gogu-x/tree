@@ -1,4 +1,4 @@
-// Package comm 提供跨进程共享的公共基础方法（唯一 ID 生成、常用工具函数等）。
+// Package common 提供跨进程共享的公共基础方法（唯一 ID 生成、常用工具函数等）。
 package comm
 
 import (
@@ -54,7 +54,7 @@ type IDGenerator struct {
 // （例如用 gate-id、game 的 server-id*节点数+node-id 等推导）。
 func NewIDGenerator(nodeID int64) (*IDGenerator, error) {
 	if nodeID < 0 || nodeID > maxNodeID {
-		return nil, fmt.Errorf("comm: nodeID must be in [0, %d], got %d", maxNodeID, nodeID)
+		return nil, fmt.Errorf("common: nodeID must be in [0, %d], got %d", maxNodeID, nodeID)
 	}
 	return &IDGenerator{nodeID: nodeID, lastMs: -1}, nil
 }

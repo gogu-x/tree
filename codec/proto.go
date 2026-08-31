@@ -7,6 +7,7 @@ import (
 	"reflect"
 
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
 // 格式：| 2字节msgID | protobuf消息体 |
@@ -66,4 +67,25 @@ func (c *protoCodec) Marshal(msg interface{}) ([]byte, error) {
 	binary.BigEndian.PutUint16(buf[:2], id)
 	copy(buf[2:], body)
 	return buf, nil
+}
+
+type ReqHeader struct {
+	UID       uint64
+	ServerID  uint32
+	SessionID string
+}
+
+// WriteHeader 写入公共头（gate 转发前填充/覆盖，防客户端伪造）。
+func WriteHeader(m proto.Message, h ReqHeader) {
+	r := m.ProtoReflect()
+	fields := r.Descriptor().Fields()
+	if fd := fields.ByName("uID"); fd != nil && fd.Kind() == protoreflect.Uint64Kind {
+		r.Set(fd, protoreflect.ValueOfUint64(h.UID))
+	}
+	if fd := fields.ByName("serverID"); fd != nil && fd.Kind() == protoreflect.Uint32Kind {
+		r.Set(fd, protoreflect.ValueOfUint32(h.ServerID))
+	}
+	if fd := fields.ByName("sessionID"); fd != nil && fd.Kind() == protoreflect.StringKind {
+		r.Set(fd, protoreflect.ValueOfString(h.SessionID))
+	}
 }

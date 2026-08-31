@@ -16,9 +16,6 @@ type Router struct {
 
 // Register maps a message type to a handler. The prototype argument is used
 // only to extract the type ?its value is irrelevant.
-//
-//	r.Register(&LoginRequest{}, handleLogin)   // matches *LoginRequest
-//	r.Register("", handleString)               // matches string
 func (r *Router) Register(prototype interface{}, h Handler) {
 	if r.handlers == nil {
 		r.handlers = make(map[reflect.Type]Handler)

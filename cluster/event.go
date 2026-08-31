@@ -17,7 +17,7 @@ type InstInfo struct {
 }
 
 // GetInstances 返回 serverID 下所有实例，按注册时间降序（最新的在前）
-func GetInstances(serverID int32) ([]InstInfo, error) {
+func GetInstances(serverID uint32) ([]InstInfo, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	prefix := fmt.Sprintf("%v%v/", gameServerPrefix, serverID)
@@ -43,7 +43,7 @@ func GetInstances(serverID int32) ([]InstInfo, error) {
 }
 
 // GetAddr 返回 serverID 下最新注册的实例地址
-func GetAddr(serverID int32) (string, error) {
+func GetAddr(serverID uint32) (string, error) {
 	instances, err := GetInstances(serverID)
 	if err != nil {
 		return "", err
@@ -55,22 +55,22 @@ func GetAddr(serverID int32) (string, error) {
 }
 
 // GetAll 获取所有已注册节点 serverID -> addr（取每个 serverID 的第一个实例）
-func GetAll() (map[int32]string, error) {
+func GetAll() (map[uint32]string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	resp, err := Client.Get(ctx, gameServerPrefix, clientv3.WithPrefix())
 	if err != nil {
 		return nil, err
 	}
-	result := make(map[int32]string)
+	result := make(map[uint32]string)
 	for _, kv := range resp.Kvs {
 		// key = /game/server/{serverID}/{NodeID}
 		parts := strings.TrimPrefix(string(kv.Key), gameServerPrefix)
 		segs := strings.SplitN(parts, "/", 2)
 		if len(segs) == 2 {
 			serverID, _ := strconv.Atoi(segs[0])
-			if _, exists := result[int32(serverID)]; !exists {
-				result[int32(serverID)] = string(kv.Value)
+			if _, exists := result[uint32(serverID)]; !exists {
+				result[uint32(serverID)] = string(kv.Value)
 			}
 		}
 	}
@@ -79,7 +79,7 @@ func GetAll() (map[int32]string, error) {
 
 // InstanceEvent 实例变更事件
 type InstanceEvent struct {
-	ServerID int32
+	ServerID uint32
 	NodeID   uint64
 	Addr     string // delete 时为空
 	Type     string // "put" | "delete" | "drain"
@@ -106,7 +106,7 @@ func WatchInstances(ctx context.Context) <-chan InstanceEvent {
 				serverID, _ := strconv.ParseUint(segs[0], 10, 64)
 				nodeID, _ := strconv.ParseUint(segs[1], 10, 64)
 				ch <- InstanceEvent{
-					ServerID: int32(serverID),
+					ServerID: uint32(serverID),
 					NodeID:   nodeID,
 					Addr:     string(ev.Kv.Value),
 					Type:     t,
@@ -131,7 +131,7 @@ func WatchInstances(ctx context.Context) <-chan InstanceEvent {
 				serverID, _ := strconv.ParseUint(segs[0], 10, 64)
 				nodeID, _ := strconv.ParseUint(segs[1], 10, 64)
 				ch <- InstanceEvent{
-					ServerID: int32(serverID),
+					ServerID: uint32(serverID),
 					NodeID:   nodeID,
 					Type:     "drain",
 				}
