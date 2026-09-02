@@ -1,29 +1,25 @@
 package log_test
 
 import (
-	"github.com/name5566/leaf/log"
-	l "log"
+	"github.com/gogu-x/tree/log"
 )
 
 func Example() {
-	name := "Leaf"
+	name := "Tree"
 
-	log.Debug("My name is %v", name)
-	log.Release("My name is %v", name)
-	log.Error("My name is %v", name)
-	// log.Fatal("My name is %v", name)
+	log.Debug("name=%s", name)
+	log.Release("service released: %s", name)
+	log.Info("service started: %s", name)
+	log.Warn("high load: %d%%", 90)
+	log.Error("request failed: %s", "timeout")
+	// log.Fatal("unrecoverable error")
 
-	logger, err := log.New("release", "", l.LstdFlags)
+	logger, err := log.New("release", "", log.DefaultFlags)
 	if err != nil {
 		return
 	}
 	defer logger.Close()
 
-	logger.Debug("will not print")
-	logger.Release("My name is %v", name)
-
-	log.Export(logger)
-
-	log.Debug("will not print")
-	log.Release("My name is %v", name)
+	logger.Debug("this record is filtered")
+	logger.Release("release logger is ready")
 }
