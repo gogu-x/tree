@@ -1,6 +1,6 @@
-// Package log provides a small leveled logger with colored console output and
+// Package tlog provides a small leveled logger with colored console output and
 // optional plain-text file output.
-package log
+package tlog
 
 import (
 	"errors"
@@ -20,7 +20,7 @@ import (
 const DefaultFlags = stdlog.Ldate | stdlog.Ltime | stdlog.Lmicroseconds | stdlog.Llongfile
 
 // NoFlags can be passed to New or SetFlags to explicitly disable the standard
-// log header. A literal 0 means DefaultFlags.
+// tlog header. A literal 0 means DefaultFlags.
 const NoFlags = -1
 
 // Level is a logging severity level.
@@ -89,7 +89,7 @@ func normalizeFlags(flags int) int {
 }
 
 // Logger writes colored records to the console. If New receives a non-empty
-// pathname, it also writes the same records without ANSI color codes to a log
+// pathname, it also writes the same records without ANSI color codes to a tlog
 // file in that directory. Logger is safe for concurrent use.
 type Logger struct {
 	mu            sync.Mutex
@@ -118,13 +118,13 @@ func New(strLevel string, pathname string, flag int) (*Logger, error) {
 	}
 
 	if err := os.MkdirAll(pathname, 0o755); err != nil {
-		return nil, fmt.Errorf("create log directory %q: %w", pathname, err)
+		return nil, fmt.Errorf("create tlog directory %q: %w", pathname, err)
 	}
 
-	filename := time.Now().Format("20060102_15_04_05.000000") + ".log"
+	filename := time.Now().Format("20060102_15_04_05.000000") + ".tlog"
 	file, err := os.OpenFile(filepath.Join(pathname, filename), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
-		return nil, fmt.Errorf("create log file: %w", err)
+		return nil, fmt.Errorf("create tlog file: %w", err)
 	}
 
 	logger.fileLogger = stdlog.New(file, "", flags)
@@ -150,7 +150,7 @@ func consoleSupportsColor() bool {
 	return os.Getenv("NO_COLOR") == "" && !strings.EqualFold(os.Getenv("TERM"), "dumb")
 }
 
-// Close flushes and closes the log file. Calling a logging method afterward
+// Close flushes and closes the tlog file. Calling a logging method afterward
 // panics, matching the behavior of the original implementation.
 func (logger *Logger) Close() {
 	logger.mu.Lock()

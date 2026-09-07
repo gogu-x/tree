@@ -1,4 +1,4 @@
-package log
+package tlog
 
 import (
 	"bytes"
@@ -31,7 +31,7 @@ func TestLoggerLevelAndColor(t *testing.T) {
 func assertFullCallerPath(t *testing.T, output, message string) {
 	t.Helper()
 	normalized := filepath.ToSlash(output)
-	pattern := `^(.*/tree/log/log_test\.go):\d+: \[DEBUG\] ` + regexp.QuoteMeta(message) + `\n$`
+	pattern := `^(.*/tree/tlog/log_test\.go):\d+: \[DEBUG\] ` + regexp.QuoteMeta(message) + `\n$`
 	matches := regexp.MustCompile(pattern).FindStringSubmatch(normalized)
 	if len(matches) != 2 {
 		t.Fatalf("full caller path was not reported correctly: %q", output)
