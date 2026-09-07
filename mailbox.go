@@ -17,9 +17,18 @@ type envelopeKind int
 
 const (
 	kindUser     envelopeKind = iota // 普通异步消息，无需回复
-	kindRequest                      // 需要回复的请求（同步 Await 或异步回调）
+	kindRequest                      // 需要回复的请求（同步 Await / 异步回调 / 响应转消息）
 	kindSystem                       // 系统消息（生命周期）
 	kindCallback                     // 结果回调：在目标 actor goroutine 内执行 cb
+)
+
+// responseMode 区分 kindRequest 信封的响应投递方式。
+type responseMode int
+
+const (
+	modeAwait    responseMode = iota // 默认：写入 resultCh，供 Await/AwaitTimeout 读取
+	modeCallback                     // 结果作为 kindCallback 信封投递回 sender，在其 goroutine 内执行 cb
+	modeMessage                      // 结果作为 kindUser 信封投递回 sender，走 sender 的 HandleMessage
 )
 
 // FutureResult holds the value and error produced by the responding actor.
@@ -32,11 +41,16 @@ type FutureResult struct {
 // Envelope 是投递到 Mailbox 的唯一消息载体，取代原先的
 // messageEnvelope / requestEnvelope / pipeCallback / Future。
 //
-// 三种使用形态：
+// 四种使用形态：
 //   - 普通消息：NewEnvelope(msg, sender, values)，Kind = kindUser。
-//   - 请求/响应：NewRequest(msg, sender, values, cb)，Kind = kindRequest；
-//     cb 为 nil 时调用方用 Await()/AwaitTimeout() 同步阻塞等待；
-//     cb 非 nil 时结果就绪后以异步回调方式在调用方 actor 的 goroutine 内执行。
+//   - 请求/响应（同步等待）：NewRequest(msg, sender, values, nil)，Kind = kindRequest，
+//     Mode = modeAwait；调用方用 Await()/AwaitTimeout() 同步阻塞等待。
+//   - 请求/响应（异步回调）：NewRequest(msg, sender, values, cb)，Kind = kindRequest，
+//     Mode = modeCallback；结果就绪后以异步回调方式在调用方 actor 的 goroutine 内执行。
+//   - 请求/响应（响应转消息）：NewRequestAsMessage(msg, sender, values)，Kind = kindRequest，
+//     Mode = modeMessage；结果就绪后作为一条普通 kindUser 消息投递回调用方 actor 的
+//     mailbox，在其 HandleMessage 内被当作一条新消息处理（而不是走专门的 cb）。
+//     适用于"统一在 HandleMessage 里处理所有回复"的场景，如 natsrpc 转发。
 //   - 回调：内部使用，Kind = kindCallback，直接携带待执行的闭包，
 //     在 run 循环内被识别并调用。
 type Envelope struct {
@@ -47,7 +61,8 @@ type Envelope struct {
 	Kind envelopeKind
 
 	// ---- 请求/响应 ----
-	resultCh chan FutureResult // 惰性同步等待通道，仅 kindRequest 且未设置回调时使用
+	Mode     responseMode
+	resultCh chan FutureResult // 惰性同步等待通道，仅 Mode == modeAwait 时使用
 	cb       func(Context, interface{}, error)
 	replied  int32 // atomic：Respond 只能生效一次
 
@@ -69,38 +84,62 @@ func NewEnvelope(msg interface{}, sender PID, values map[string]interface{}) *En
 	return &Envelope{Msg: msg, Sender: sender, Values: values, Kind: kindUser}
 }
 
-// NewRequest 创建一条请求信封。cb 为 nil 时走同步 Await/AwaitTimeout 语义；
-// cb 非 nil 时，结果就绪后会作为 kindCallback 信封投递回 pipePID 的 mailbox，
-// 在其 goroutine 内执行 cb(ctx, value, err)——ctx 是 pipePID 对应 actor 的
+// NewRequest 创建一条请求信封。cb 为 nil 时走同步 Await/AwaitTimeout 语义（Mode = modeAwait）；
+// cb 非 nil 时 Mode = modeCallback，结果就绪后会作为 kindCallback 信封投递回 pipePID 的
+// mailbox，在其 goroutine 内执行 cb(ctx, value, err)——ctx 是 pipePID 对应 actor 的
 // Context，因此 cb 内可以继续 ctx.Send/ctx.Request 等操作。
 // cb 必须在构造时一次性给定（而不是事后通过 setter 修改），因为 Envelope
 // 一旦被 PushUser 进目标 mailbox，就可能在另一个 goroutine 里被并发读取——
 // 构造后即不可变才能避免数据竞争。
 func NewRequest(msg interface{}, sender PID, values map[string]interface{}, cb func(Context, interface{}, error)) *Envelope {
-	return &Envelope{Msg: msg, Sender: sender, Values: values, Kind: kindRequest, cb: cb}
+	mode := modeAwait
+	if cb != nil {
+		mode = modeCallback
+	}
+	return &Envelope{Msg: msg, Sender: sender, Values: values, Kind: kindRequest, Mode: mode, cb: cb}
+}
+
+// NewRequestAsMessage 创建一条"响应转消息"的请求信封（Mode = modeMessage）。
+// 结果就绪后不经 cb、不经 resultCh，而是作为一条 kindUser 消息重新投递回
+// sender 的 mailbox，在其 HandleMessage 内被当作一条新消息处理，Values 会
+// 原样保留传递。适用于希望统一在 HandleMessage 里处理所有响应的场景。
+//
+// 若响应携带 err != nil，Respond 不会投递消息（避免把 error 硬塞进
+// HandleMessage(ctx, msg interface{}) 这种没有 error 位置的签名），仅记录日志；
+// 调用方若需要感知失败，应改用 NewRequest 搭配 cb 或 Await。
+func NewRequestAsMessage(msg interface{}, sender PID, values map[string]interface{}) *Envelope {
+	return &Envelope{Msg: msg, Sender: sender, Values: values, Kind: kindRequest, Mode: modeMessage}
 }
 
 // Respond 由响应方调用，投递结果给发起请求的一方。
-// 若构造时给定了回调，结果会作为 kindCallback 信封发回调用方 mailbox，在
-// 调用方 actor 的 goroutine 内执行 cb(ctx, value, err)；
-// 否则写入 resultCh，供 Await/AwaitTimeout 读取。
+// 根据构造时的 Mode 走不同的投递方式：
+//   - modeCallback：结果作为 kindCallback 信封发回调用方 mailbox，在
+//     调用方 actor 的 goroutine 内执行 cb(ctx, value, err)；
+//   - modeMessage：结果（value）作为 kindUser 信封发回调用方 mailbox，在
+//     调用方 actor 的 HandleMessage 内被当作新消息处理；err != nil 时不投递，
+//     仅记录日志；
+//   - modeAwait（默认）：写入 resultCh，供 Await/AwaitTimeout 读取。
+//
 // 只有第一次调用生效，重复调用是no-op。
 //
-// 若 cb 非 nil 但 sender 不是一个存活的 actor（例如 Request 是从非 actor
-// 上下文发起、没有 mailbox 可投递），cb 不会被执行——因为 cb 需要的 Context
-// 只能来自一个真实存活的 actor，没有该 actor 就无法构造出合法的 Context。
-// 这种用法本身是编程错误：需要 cb 拿到 Context，就必须通过某个 actor（如
-// ctx.RequestCallback）发起请求。
+// 若 Mode 为 modeCallback/modeMessage 但 sender 不是一个存活的 actor（例如
+// Request 是从非 actor 上下文发起、没有 mailbox 可投递），结果不会被投递——
+// 因为 cb 需要的 Context、或者响应消息要投递的 mailbox，都只能来自一个真实
+// 存活的 actor。这种用法本身是编程错误：需要异步接收结果，就必须通过某个
+// actor（如 ctx.RequestCallback / ctx.RequestAsMessage）发起请求。
 func (e *Envelope) Respond(value interface{}, err error) {
 	if !atomic.CompareAndSwapInt32(&e.replied, 0, 1) {
 		return
 	}
-	if e.cb != nil {
+	switch e.Mode {
+	case modeCallback:
 		e.pipeSys.sendCallback(e.pipePID, e.cb, value, err)
-		return
+	case modeMessage:
+		e.pipeSys.sendResponseAsMessage(e.pipePID, value, err, e.Values)
+	default:
+		e.ensureResultCh()
+		e.resultCh <- FutureResult{Value: value, Err: err}
 	}
-	e.ensureResultCh()
-	e.resultCh <- FutureResult{Value: value, Err: err}
 }
 
 // ensureResultCh 惰性创建 resultCh，避免设置了回调的请求也分配 channel。
@@ -110,7 +149,8 @@ func (e *Envelope) ensureResultCh() {
 	}
 }
 
-// Await 阻塞直到结果可用并返回。仅适用于构造时未传 cb 的请求。
+// Await 阻塞直到结果可用并返回。仅适用于 Mode == modeAwait 的请求
+// （即构造时未传 cb 且未使用 NewRequestAsMessage）。
 func (e *Envelope) Await() (interface{}, error) {
 	e.ensureResultCh()
 	r := <-e.resultCh

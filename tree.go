@@ -249,6 +249,27 @@ func (t *Tree) sendCallback(pid PID, cb func(Context, interface{}, error), value
 	return true
 }
 
+// sendResponseAsMessage 将请求的响应结果作为一条普通 kindUser 消息投递回
+// pid 的 mailbox，在其 HandleMessage 内被当作新消息处理。values 原样保留
+// 传递（例如 natsrpc 转发场景中携带的 sessionID/taggerName 等路由信息）。
+// 用于 NewRequestAsMessage 构造的信封被 Respond 时。
+//
+// err != nil 时不投递（HandleMessage(ctx, msg interface{}) 签名没有 error
+// 位置，无法无损传递错误），仅记录日志；返回 false。
+// pid 不是存活 actor 时同样不投递，返回 false。
+func (t *Tree) sendResponseAsMessage(pid PID, value interface{}, err error, values map[string]interface{}) bool {
+	if err != nil {
+		defaultLogger.Error("tree: RequestAsMessage to %v got error, dropping response: %v", pid, err)
+		return false
+	}
+	proc, ok := t.loadProc(pid)
+	if !ok {
+		return false
+	}
+	proc.mailbox.PushUser(&Envelope{Kind: kindUser, Msg: value, Values: values})
+	return true
+}
+
 // TrySend delivers a message without blocking. Returns false if the target
 // PID is not registered or the mailbox is full.
 func (t *Tree) TrySend(pid PID, msg interface{}) bool {
@@ -280,6 +301,32 @@ func (t *Tree) Request(pid PID, msg interface{}) *Envelope {
 // see sendCallback).
 func (t *Tree) RequestCallback(pid PID, msg interface{}, sender PID, cb func(Context, interface{}, error)) *Envelope {
 	return t.request(pid, msg, sender, cb)
+}
+
+// RequestAsMessage delivers a message to the target actor; when the target
+// responds (via ctx.Response), the result value is redelivered to sender's
+// mailbox as an ordinary kindUser message and processed by sender's
+// HandleMessage, instead of via a dedicated callback or Await. Useful when
+// all responses should funnel through a single HandleMessage dispatch (e.g.
+// natsrpc forwarding). sender must be a live actor's PID, otherwise the
+// response is silently dropped when it arrives (see sendResponseAsMessage).
+// If the response carries a non-nil error, it is logged and not delivered,
+// since HandleMessage(ctx, msg interface{}) has no error slot.
+func (t *Tree) RequestAsMessage(pid PID, msg interface{}, sender PID) *Envelope {
+	return t.requestAsMessageWithValues(pid, msg, sender, nil)
+}
+
+func (t *Tree) requestAsMessageWithValues(pid PID, msg interface{}, sender PID, values map[string]interface{}) *Envelope {
+	env := NewRequestAsMessage(msg, sender, values)
+	env.pipeSys = t
+	env.pipePID = sender
+	proc, ok := t.loadProc(pid)
+	if !ok {
+		env.Respond(nil, ErrActorNotFound)
+		return env
+	}
+	proc.mailbox.PushUser(env)
+	return env
 }
 
 func (t *Tree) request(pid PID, msg interface{}, sender PID, cb func(Context, interface{}, error)) *Envelope {

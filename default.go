@@ -43,3 +43,11 @@ func Request(pid PID, msg interface{}) *Envelope { return defaultSystem.Request(
 func RequestCallback(pid PID, msg interface{}, sender PID, cb func(Context, interface{}, error)) *Envelope {
 	return defaultSystem.RequestCallback(pid, msg, sender, cb)
 }
+
+// RequestAsMessage 通过全局系统向目标 Actor 发送请求；结果就绪后会作为一条
+// 普通消息投递回 sender 的 mailbox，在其 HandleMessage 内被当作新消息处理。
+// sender 必须是一个存活的 actor PID，否则响应到达时会被丢弃。
+// 若响应携带非 nil error，会被记录日志且不投递（HandleMessage 签名无 error 位）。
+func RequestAsMessage(pid PID, msg interface{}, sender PID) *Envelope {
+	return defaultSystem.RequestAsMessage(pid, msg, sender)
+}

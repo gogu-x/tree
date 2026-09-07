@@ -11,7 +11,7 @@ type Logger interface {
 	Error(format string, a ...interface{})
 }
 
-// stdLogger 是缺省 Logger，输出到标准 log。
+// stdLogger 是缺省 Logger，输出到标准 tlog。
 type stdLogger struct{}
 
 func (stdLogger) Error(format string, a ...interface{}) {

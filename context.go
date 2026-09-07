@@ -23,6 +23,13 @@ type Context interface {
 	// in this actor's goroutine (with this actor's Context) once the target
 	// responds.
 	RequestCallback(pid PID, msg interface{}, cb func(Context, interface{}, error)) *Envelope
+	// RequestAsMessage delivers a message to the target actor; when the
+	// target responds, the result value is redelivered to this actor's
+	// mailbox as an ordinary message and processed by HandleMessage,
+	// instead of via a dedicated callback or Await. Useful when all
+	// responses should funnel through a single HandleMessage dispatch.
+	// A non-nil response error is logged and not delivered.
+	RequestAsMessage(pid PID, msg interface{}) *Envelope
 	// Response sends a reply for the current request. If the current message
 	// was not sent via Request/RequestCallback, this is a no-op.
 	Response(value interface{}, err error)
@@ -78,6 +85,9 @@ func (c *localContext) Request(pid PID, msg interface{}) *Envelope {
 }
 func (c *localContext) RequestCallback(pid PID, msg interface{}, cb func(Context, interface{}, error)) *Envelope {
 	return c.system.requestWithValues(pid, msg, c.self, c.values, cb)
+}
+func (c *localContext) RequestAsMessage(pid PID, msg interface{}) *Envelope {
+	return c.system.requestAsMessageWithValues(pid, msg, c.self, c.values)
 }
 func (c *localContext) Lookup(name string) (PID, bool) {
 	return c.system.Lookup(name)
