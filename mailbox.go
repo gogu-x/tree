@@ -62,7 +62,7 @@ type Envelope struct {
 
 	// ---- 请求/响应 ----
 	Mode     responseMode
-	resultCh chan FutureResult // 惰性同步等待通道，仅 Mode == modeAwait 时使用
+	resultCh chan FutureResult // 同步等待通道，仅 Mode == modeAwait 时分配
 	cb       func(Context, interface{}, error)
 	replied  int32 // atomic：Respond 只能生效一次
 
@@ -96,7 +96,14 @@ func NewRequest(msg interface{}, sender PID, values map[string]interface{}, cb f
 	if cb != nil {
 		mode = modeCallback
 	}
-	return &Envelope{Msg: msg, Sender: sender, Values: values, Kind: kindRequest, Mode: mode, cb: cb}
+	e := &Envelope{Msg: msg, Sender: sender, Values: values, Kind: kindRequest, Mode: mode, cb: cb}
+	if mode == modeAwait {
+		// 必须在构造时分配：Respond 与 Await/AwaitTimeout 分别在响应方和
+		// 请求方两个 goroutine 中运行，惰性分配会让双方各建一个 channel，
+		// 响应被写进无人读取的那个，请求方一直等到超时。
+		e.resultCh = make(chan FutureResult, 1)
+	}
+	return e
 }
 
 // NewRequestAsMessage 创建一条"响应转消息"的请求信封（Mode = modeMessage）。
@@ -137,29 +144,19 @@ func (e *Envelope) Respond(value interface{}, err error) {
 	case modeMessage:
 		e.pipeSys.sendResponseAsMessage(e.pipePID, value, err, e.Values)
 	default:
-		e.ensureResultCh()
 		e.resultCh <- FutureResult{Value: value, Err: err}
-	}
-}
-
-// ensureResultCh 惰性创建 resultCh，避免设置了回调的请求也分配 channel。
-func (e *Envelope) ensureResultCh() {
-	if e.resultCh == nil {
-		e.resultCh = make(chan FutureResult, 1)
 	}
 }
 
 // Await 阻塞直到结果可用并返回。仅适用于 Mode == modeAwait 的请求
 // （即构造时未传 cb 且未使用 NewRequestAsMessage）。
 func (e *Envelope) Await() (interface{}, error) {
-	e.ensureResultCh()
 	r := <-e.resultCh
 	return r.Value, r.Err
 }
 
 // AwaitTimeout 阻塞等待结果，最长等待 d。超时返回 ErrTimeout。
 func (e *Envelope) AwaitTimeout(d time.Duration) (interface{}, error) {
-	e.ensureResultCh()
 	select {
 	case r := <-e.resultCh:
 		return r.Value, r.Err
