@@ -7,7 +7,7 @@ var defaultSystem = NewTree()
 func Default() *Tree { return defaultSystem }
 
 // Spawn 在全局系统中注册并启动一批 Actor，名字取自各 Actor 的 Name()。
-// 本批次全部 OnInit 完成后，才会开始处理消息。
+// Actor 按参数顺序完成 OnInit；每个 Actor 初始化后立即开始处理消息。
 func Spawn(actors ...Actor) []PID {
 	return defaultSystem.Spawn(actors...)
 }

@@ -12,6 +12,10 @@ import (
 
 // Tree manages actor lifecycle and message routing.
 type Tree struct {
+	// spawnMu serializes startup batches so their OnInit sequences cannot
+	// interleave. Within one batch actors initialize in argument order.
+	spawnMu sync.Mutex
+
 	// actors 使用 sync.Map：每个 PID 只在 Spawn 时写入一次、退出时删除一次，
 	// 中间被消息投递读取多次。这种「写一次读多次」的模式下，sync.Map 的读路径
 	// 基本无锁（atomic load），避免了 Spawn 写锁阻塞全局消息投递的锁护航问题。
@@ -58,20 +62,22 @@ func NewTree() *Tree {
 // 名字取自 Actor.Name()，分两个阶段启动：
 //
 //  1. 为全部 Actor 分配 PID、创建 mailbox 并写入 registry；
-//  2. 启动各自的 goroutine，先执行 OnInit，等本批次所有 OnInit
-//     都返回后，才进入消息循环消费 mailbox。
+//  2. 按参数顺序启动 goroutine；前一个 Actor 完成 OnInit 并进入消息循环后，
+//     才启动下一个 Actor。
 //
 // 由此得到两个保证：
-//   - 同一批 Actor 的 OnInit 里可以互相 Lookup / Send，与传入顺序无关；
-//   - 任何 Actor 处理第一条消息时，本批次所有 Actor 都已初始化完毕。
+//   - 同一批 Actor 在 OnInit 中都可以 Lookup 到其他 Actor；
+//   - 后启动 Actor 的 OnInit 可以同步请求前面已经初始化完成的 Actor；
+//   - 多个并发 Spawn 调用的初始化过程不会交错。
 //
-// 注意：OnInit 内不要同步等待（Envelope.Await）同批次其他 Actor 的回复，
-// 对方此时尚未开始消费 mailbox，会一直等到超时。跨 Actor 的初始化交互
-// 请用异步 Send，或延后到第一条消息再做。
+// 注意：OnInit 只能同步等待参数顺序中位于自己之前的 Actor；后面的 Actor
+// 尚未初始化，也没有开始消费 mailbox。
 func (t *Tree) Spawn(actors ...Actor) []PID {
 	if len(actors) == 0 {
 		return nil
 	}
+	t.spawnMu.Lock()
+	defer t.spawnMu.Unlock()
 
 	pids := make([]PID, len(actors))
 	procs := make([]*actorProcess, len(actors))
@@ -105,12 +111,14 @@ func (t *Tree) Spawn(actors ...Actor) []PID {
 		procs[i] = proc
 	}
 
-	// 阶段二：启动 goroutine，用 WaitGroup 做一次性屏障。
-	var initBarrier sync.WaitGroup
-	initBarrier.Add(len(procs))
+	// 阶段二：严格按参数顺序启动。每个 actor 完成 OnInit 并进入消息
+	// 循环后，才初始化下一个 actor。这样后启动 actor 的 OnInit 可以
+	// 同步请求已经启动完成的底层 actor。
 	for _, proc := range procs {
+		initialized := make(chan struct{})
 		t.wg.Add(1)
-		go t.run(proc, &initBarrier)
+		go t.run(proc, initialized)
+		<-initialized
 	}
 
 	return pids
@@ -142,9 +150,8 @@ func (t *Tree) MustLookup(name string) PID {
 }
 
 // run is the main loop for an actor process.
-// initBarrier 用于两阶段启动：OnInit 执行完先 Done，再 Wait 等齐同批次
-// 其他 Actor，之后才开始消费 mailbox。
-func (t *Tree) run(proc *actorProcess, initBarrier *sync.WaitGroup) {
+// initialized 在 OnInit 返回后关闭，使 Spawn 可以继续初始化下一个 Actor。
+func (t *Tree) run(proc *actorProcess, initialized chan<- struct{}) {
 	defer t.wg.Done()
 	defer func() {
 		t.actors.Delete(proc.pid)
@@ -161,10 +168,8 @@ func (t *Tree) run(proc *actorProcess, initBarrier *sync.WaitGroup) {
 	ctx := &localContext{self: proc.pid, system: t}
 
 	t.safeCall(proc, func() { proc.actor.OnInit(ctx) })
-
-	if initBarrier != nil {
-		initBarrier.Done()
-		initBarrier.Wait()
+	if initialized != nil {
+		close(initialized)
 	}
 
 	for {
