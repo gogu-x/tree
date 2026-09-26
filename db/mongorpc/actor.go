@@ -27,6 +27,13 @@ type FindOne struct {
 	Result     interface{}
 }
 
+// FindMany 根据查询条件加载全部匹配文档。
+type FindMany struct {
+	Collection string      // Mongo 集合名称。
+	Filter     interface{} // Mongo 查询条件。
+	Result     interface{} // 指向文档切片的指针。
+}
+
 // UpdateOne updates a single document. Response: error
 type UpdateOne struct {
 	Collection string
@@ -56,6 +63,7 @@ func (a *Actor) Name() string { return a.name }
 func (a *Actor) OnInit(_ tree.Context) {
 	a.router.Register(&InsertOne{}, a.onInsert)
 	a.router.Register(&FindOne{}, a.onFind)
+	a.router.Register(&FindMany{}, a.onFindMany)
 	a.router.Register(&UpdateOne{}, a.onUpdate)
 	a.router.Register(&DeleteOne{}, a.onDelete)
 	tlog.Log.Info("rpc/mongo: ready, db=%s", a.db.Name())
@@ -95,6 +103,31 @@ func (a *Actor) onFind(ctx tree.Context, msg interface{}) {
 	f.Respond(m.Result, err)
 }
 
+func (a *Actor) onFindMany(ctx tree.Context, msg interface{}) {
+	m := msg.(*FindMany)
+	f := ctx.RequestEnvelope()
+	dbCtx, cancel := bg()
+	defer cancel()
+	cursor, err := a.db.Collection(m.Collection).Find(dbCtx, m.Filter)
+	if err != nil {
+		tlog.Log.Error("[rpc/mongo/FindMany] 集合查询失败, collection=%v err=%v", m.Collection, err)
+		if f != nil {
+			f.Respond(nil, err)
+		}
+		return
+	}
+	defer cursor.Close(dbCtx)
+	if err := cursor.All(dbCtx, m.Result); err != nil {
+		tlog.Log.Error("[rpc/mongo/FindMany] 查询结果解码失败, collection=%v err=%v", m.Collection, err)
+		if f != nil {
+			f.Respond(nil, err)
+		}
+		return
+	}
+	if f != nil {
+		f.Respond(m.Result, nil)
+	}
+}
 func (a *Actor) onUpdate(ctx tree.Context, msg interface{}) {
 	m := msg.(*UpdateOne)
 	f := ctx.RequestEnvelope()
