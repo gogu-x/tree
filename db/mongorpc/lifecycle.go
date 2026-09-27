@@ -36,11 +36,7 @@ type Lifecycle struct {
 }
 
 // NewLifecycle 创建基于通用 Mongo Store 的数据生命周期组件。
-func NewLifecycle(
-	store *Store,
-	ticker *timer.TimeWheel,
-	ctx tree.Context,
-) *Lifecycle {
+func NewLifecycle(store *Store, ticker *timer.TimeWheel, ctx tree.Context) *Lifecycle {
 	lifecycle := &Lifecycle{
 		store:   store,
 		saving:  make(map[recordKey]*saveState),
@@ -59,7 +55,9 @@ func (lifecycle *Lifecycle) Register(model Model) error {
 		return fmt.Errorf("database model is nil")
 	}
 	lifecycle.Ticker.Register(model.GetTickerType(), lifecycle.onModelTimer)
-	lifecycle.scheduleModel(model)
+	if err := lifecycle.scheduleModel(model); err != nil {
+		return err
+	}
 	return lifecycle.store.Register(model)
 }
 
@@ -107,9 +105,16 @@ func (lifecycle *Lifecycle) onModelTimer(data interface{}) {
 
 // Stop 停止生命周期组件后续的自动存盘调度。
 func (lifecycle *Lifecycle) Stop() {
-	if lifecycle != nil {
-		lifecycle.stopped = true
+	for _, model := range lifecycle.store.models {
+		lifecycle.saveModel(lifecycle.context, model, func(_ tree.Context, err error) {
+			if err != nil {
+				tlog.Log.Error("[db/Lifecycle.Stop] 关服全部数据落盘, collection=%s err=%v", model.GetCollection(), err)
+			} else {
+				tlog.Log.Info("[db/Lifecycle.Stop] 关服全部数据落盘, collection=%s", model.GetCollection())
+			}
+		})
 	}
+
 }
 
 // LoadOne 加载已注册模型的一条数据。
