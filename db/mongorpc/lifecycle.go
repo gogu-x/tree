@@ -152,6 +152,10 @@ func (lifecycle *Lifecycle) Save(
 	if !ok || data == nil || reflect.TypeOf(data) != modelType(prototype) {
 		return false
 	}
+	dirty := model.MackDirty(data)
+	if !dirty {
+		return false
+	}
 	id := model.GetKey(data)
 	if id == nil {
 		return false

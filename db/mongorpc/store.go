@@ -22,7 +22,7 @@ type Model interface {
 	Range(func(interface{}) bool)              // 遍历当前内存中的文档。
 	GetSaveInterval() time.Duration            // 自动存盘周期；零表示不参与周期调度。
 	AfterSave(tree.Context, interface{}) error // 单条存盘完成后的模型回调。
-	MackDirty() bool                           // 是否持有脏标记
+	MackDirty(interface{}) bool                // 是否持有脏标记
 	GetTickerType() timer.TimerType            // 存盘类型
 }
 
@@ -30,7 +30,6 @@ type Model interface {
 type Store struct {
 	mongoActorName string
 	models         map[reflect.Type]Model
-	onRegister     func(Model) error
 }
 
 // NewStore 构造绑定指定 Mongo Actor 的数据访问库。
