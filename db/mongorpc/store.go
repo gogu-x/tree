@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/gogu-x/tree"
+	"github.com/gogu-x/tree/timer"
 	"github.com/gogu-x/tree/tlog"
 	"go.mongodb.org/mongo-driver/v2/bson"
 )
@@ -22,12 +23,14 @@ type Model interface {
 	GetSaveInterval() time.Duration            // 自动存盘周期；零表示不参与周期调度。
 	AfterSave(tree.Context, interface{}) error // 单条存盘完成后的模型回调。
 	MackDirty() bool                           // 是否持有脏标记
+	GetTickerType() timer.TimerType            // 存盘类型
 }
 
 // Store 按 Go 文档类型管理集合映射，并提供通用加载和存盘操作。
 type Store struct {
 	mongoActorName string
 	models         map[reflect.Type]Model
+	onRegister     func(Model) error
 }
 
 // NewStore 构造绑定指定 Mongo Actor 的数据访问库。
@@ -35,9 +38,9 @@ func NewStore(mongoActorName string) *Store {
 	return &Store{mongoActorName: mongoActorName, models: make(map[reflect.Type]Model)}
 }
 
-// Register 注册一个文档模型。
+// Register 注册文档模型；模型配置了存盘周期时，由关联的 Lifecycle 自动调度定时存盘。
 func (store *Store) Register(model Model) error {
-	if model == nil {
+	if store == nil || model == nil {
 		return fmt.Errorf("invalid database model")
 	}
 	dataType := reflect.TypeOf(model.GetPrototype())
@@ -47,7 +50,12 @@ func (store *Store) Register(model Model) error {
 	if model.GetIDField() == "" {
 		return fmt.Errorf("model id field is required")
 	}
-	store.models[dataType] = model
+
+	models := store.models
+	if _, exists := models[dataType]; exists {
+		return fmt.Errorf("database model already registered, collection=%s", model.GetCollection())
+	}
+	models[dataType] = model
 	return nil
 }
 
