@@ -106,6 +106,7 @@ func (lifecycle *Lifecycle) onModelTimer(data interface{}) {
 // Stop 停止生命周期组件后续的自动存盘调度。
 func (lifecycle *Lifecycle) Stop() {
 	for _, model := range lifecycle.store.models {
+		tlog.Log.Info("lifecycle stop model %s", model.GetCollection())
 		lifecycle.saveModel(lifecycle.context, model, func(_ tree.Context, err error) {
 			if err != nil {
 				tlog.Log.Error("[db/Lifecycle.Stop] 关服全部数据落盘, collection=%s err=%v", model.GetCollection(), err)

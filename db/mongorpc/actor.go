@@ -60,6 +60,8 @@ func NewActor(name string, db *mongo.Database) *Actor { return &Actor{name: name
 
 func (a *Actor) Name() string { return a.name }
 
+func (a *Actor) MailboxSize() int { return 20 * 1024 }
+
 func (a *Actor) OnInit(_ tree.Context) {
 	a.router.Register(&InsertOne{}, a.onInsert)
 	a.router.Register(&FindOne{}, a.onFind)
