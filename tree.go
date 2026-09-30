@@ -1,6 +1,7 @@
 package tree
 
 import (
+	"container/list"
 	"fmt"
 	"os"
 	"os/signal"
@@ -12,13 +13,7 @@ import (
 
 // Tree manages actor lifecycle and message routing.
 type Tree struct {
-	// spawnMu serializes startup batches so their OnInit sequences cannot
-	// interleave. Within one batch actors initialize in argument order.
-	spawnMu sync.Mutex
-
 	// actors 使用 sync.Map：每个 PID 只在 Spawn 时写入一次、退出时删除一次，
-	// 中间被消息投递读取多次。这种「写一次读多次」的模式下，sync.Map 的读路径
-	// 基本无锁（atomic load），避免了 Spawn 写锁阻塞全局消息投递的锁护航问题。
 	// 键类型为 PID，值类型为 *actorProcess。
 	actors sync.Map
 
@@ -29,6 +24,8 @@ type Tree struct {
 	regMu sync.RWMutex
 
 	registry map[string]PID // name → PID registry
+
+	spawnOrder list.List // Spawn 时追加
 
 	wg sync.WaitGroup
 }
@@ -48,6 +45,7 @@ type actorProcess struct {
 	actor   Actor
 	mailbox *Mailbox
 	logger  Logger
+	done    chan interface{}
 }
 
 // NewTree creates a new empty Tree.
@@ -58,26 +56,12 @@ func NewTree() *Tree {
 }
 
 // Spawn 注册并启动一批 Actor，返回与入参顺序一致的 PID 列表。
-//
-// 名字取自 Actor.Name()，分两个阶段启动：
-//
-//  1. 为全部 Actor 分配 PID、创建 mailbox 并写入 registry；
-//  2. 按参数顺序启动 goroutine；前一个 Actor 完成 OnInit 并进入消息循环后，
-//     才启动下一个 Actor。
-//
-// 由此得到两个保证：
-//   - 同一批 Actor 在 OnInit 中都可以 Lookup 到其他 Actor；
-//   - 后启动 Actor 的 OnInit 可以同步请求前面已经初始化完成的 Actor；
-//   - 多个并发 Spawn 调用的初始化过程不会交错。
-//
 // 注意：OnInit 只能同步等待参数顺序中位于自己之前的 Actor；后面的 Actor
 // 尚未初始化，也没有开始消费 mailbox。
 func (t *Tree) Spawn(actors ...Actor) []PID {
 	if len(actors) == 0 {
 		return nil
 	}
-	t.spawnMu.Lock()
-	defer t.spawnMu.Unlock()
 
 	pids := make([]PID, len(actors))
 	procs := make([]*actorProcess, len(actors))
@@ -98,6 +82,7 @@ func (t *Tree) Spawn(actors ...Actor) []PID {
 			actor:   a,
 			mailbox: NewMailbox(mailboxSizeOf(a)),
 			logger:  loggerOf(a),
+			done:    make(chan interface{}, 1),
 		}
 
 		t.actors.Store(pid, proc)
@@ -105,6 +90,7 @@ func (t *Tree) Spawn(actors ...Actor) []PID {
 
 		t.regMu.Lock()
 		t.registry[name] = pid
+		t.spawnOrder.PushBack(proc)
 		t.regMu.Unlock()
 
 		pids[i] = pid
@@ -162,6 +148,7 @@ func (t *Tree) run(proc *actorProcess, initialized chan<- struct{}) {
 		if regPID, ok := t.registry[proc.pid.Name]; ok && regPID == proc.pid {
 			delete(t.registry, proc.pid.Name)
 		}
+		close(proc.done)
 		t.regMu.Unlock()
 	}()
 
