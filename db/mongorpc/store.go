@@ -10,6 +10,7 @@ import (
 	"github.com/gogu-x/tree/timer"
 	"github.com/gogu-x/tree/tlog"
 	"go.mongodb.org/mongo-driver/v2/bson"
+	"go.mongodb.org/mongo-driver/v2/mongo"
 )
 
 // Model 描述一个 Mongo 集合中的文档类型和主键字段。
@@ -148,6 +149,32 @@ func (store *Store) Save(
 		}
 	}
 	tlog.Log.Error("[db/Store.Save] Mongo Actor 不可用或保存请求未发送, collection=%v", model.GetCollection())
+	return false
+}
+
+// CreateIndexes 为已注册模型对应的集合创建索引；定义相同的已有索引会被跳过。
+// Mongo Actor 串行处理请求，先于加载请求发出即可保证加载前索引已处理。
+func (store *Store) CreateIndexes(
+	ctx tree.Context,
+	prototype interface{},
+	indexes []mongo.IndexModel,
+	callback func(tree.Context, error),
+) bool {
+	model, ok := store.modelFor(prototype)
+	if !ok || len(indexes) == 0 {
+		return false
+	}
+	if mongoPID, ok := ctx.Lookup(store.mongoActorName); ok {
+		request := &CreateIndexes{Collection: model.GetCollection(), Indexes: indexes}
+		if envelope := ctx.RequestCallback(mongoPID, request, func(callbackCtx tree.Context, _ interface{}, err error) {
+			if callback != nil {
+				callback(callbackCtx, err)
+			}
+		}); envelope != nil {
+			return true
+		}
+	}
+	tlog.Log.Error("[db/Store.CreateIndexes] Mongo Actor 不可用或建索引请求未发送, collection=%v", model.GetCollection())
 	return false
 }
 

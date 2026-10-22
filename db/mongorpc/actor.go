@@ -48,6 +48,15 @@ type DeleteOne struct {
 	Filter     interface{}
 }
 
+// CreateIndexes 为集合创建索引；定义相同的已有索引会被跳过。Response: ([]string 索引名, error)
+type CreateIndexes struct {
+	Collection string             // Mongo 集合名称。
+	Indexes    []mongo.IndexModel // 要创建的索引定义。
+}
+
+// indexTimeout 表示建索引请求的超时时间；首次在大集合上建索引耗时较长。
+const indexTimeout = 60 * time.Second
+
 type Actor struct {
 	name   string
 	router tree.Router
@@ -68,6 +77,7 @@ func (a *Actor) OnInit(_ tree.Context) {
 	a.router.Register(&FindMany{}, a.onFindMany)
 	a.router.Register(&UpdateOne{}, a.onUpdate)
 	a.router.Register(&DeleteOne{}, a.onDelete)
+	a.router.Register(&CreateIndexes{}, a.onCreateIndexes)
 	tlog.Log.Info("rpc/mongo: ready, db=%s", a.db.Name())
 }
 
@@ -159,6 +169,22 @@ func (a *Actor) onDelete(ctx tree.Context, msg interface{}) {
 		return
 	}
 	f.Respond(nil, err)
+}
+
+func (a *Actor) onCreateIndexes(ctx tree.Context, msg interface{}) {
+	m := msg.(*CreateIndexes)
+	f := ctx.RequestEnvelope()
+	dbCtx, cancel := context.WithTimeout(context.Background(), indexTimeout)
+	defer cancel()
+	names, err := a.db.Collection(m.Collection).Indexes().CreateMany(dbCtx, m.Indexes)
+	if err != nil {
+		tlog.Log.Error("[rpc/mongo/CreateIndexes] 创建索引失败, collection=%v err=%v", m.Collection, err)
+	} else {
+		tlog.Log.Info("[rpc/mongo/CreateIndexes] 索引已就绪, collection=%v indexes=%v", m.Collection, names)
+	}
+	if f != nil {
+		f.Respond(names, err)
+	}
 }
 
 // bg returns a background context bounded by a timeout. The caller is
