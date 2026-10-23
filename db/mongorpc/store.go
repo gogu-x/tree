@@ -76,6 +76,7 @@ func (store *Store) LoadOne(
 			Collection: model.GetCollection(),
 			Filter:     bson.M{model.GetIDField(): id},
 			Result:     result,
+			Key:        id, // 与同主键的 Save 落在同一工作协程，保证读写顺序。
 		}
 		if envelope := ctx.RequestCallback(mongoPID, request, callback); envelope != nil {
 			return true
@@ -141,6 +142,7 @@ func (store *Store) Save(
 			Filter:     bson.M{model.GetIDField(): id},
 			Update:     bson.M{"$set": document},
 			Upsert:     true,
+			Key:        id, // 同主键的写入在同一工作协程按提交顺序执行。
 		}
 		if envelope := ctx.RequestCallback(mongoPID, request, func(callbackCtx tree.Context, _ interface{}, err error) {
 			callback(callbackCtx, err)
@@ -153,7 +155,7 @@ func (store *Store) Save(
 }
 
 // CreateIndexes 为已注册模型对应的集合创建索引；定义相同的已有索引会被跳过。
-// Mongo Actor 串行处理请求，先于加载请求发出即可保证加载前索引已处理。
+// 建索引与同集合的批量加载都按集合分片、在同一工作协程串行执行，先于加载请求发出即可保证加载前索引已处理。
 func (store *Store) CreateIndexes(
 	ctx tree.Context,
 	prototype interface{},
