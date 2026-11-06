@@ -1,0 +1,6 @@
+# 本地工具与编辑器配置
+.claude/
+.agent_notes/
+.idea/
+.run/
+.kiro/
