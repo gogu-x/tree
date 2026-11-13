@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestLoggerLevelAndColor(t *testing.T) {
@@ -16,6 +17,7 @@ func TestLoggerLevelAndColor(t *testing.T) {
 
 	logger.Debug("hidden=%d", 1)
 	logger.Release("user=%s count=%d", "alice", 2)
+	finishLogger(t, logger)
 
 	if console.String() != "\x1b[32m[RELEASE] user=alice count=2\x1b[0m\n" {
 		t.Fatalf("unexpected console output: %q", console.String())
@@ -46,6 +48,7 @@ func TestLoggerCaller(t *testing.T) {
 	logger := newLogger(DebugLevel, &output, nil, stdlog.Llongfile, false)
 
 	logger.Debug("caller")
+	finishLogger(t, logger)
 
 	assertFullCallerPath(t, output.String(), "caller")
 }
@@ -57,6 +60,7 @@ func TestGlobalLoggerCaller(t *testing.T) {
 	var output bytes.Buffer
 	globalLogger.Store(newLogger(DebugLevel, &output, nil, stdlog.Llongfile, false))
 	Debug("global caller")
+	finishLogger(t, globalLogger.Load())
 
 	assertFullCallerPath(t, output.String(), "global caller")
 }
@@ -92,11 +96,20 @@ func TestSetLevel(t *testing.T) {
 	}
 	logger.Info("hidden")
 	logger.Warn("visible")
+	finishLogger(t, logger)
 
 	if output.String() != "[WARN] visible\n" {
 		t.Fatalf("unexpected output: %q", output.String())
 	}
 	if err := logger.SetLevel("invalid"); err == nil {
 		t.Fatal("SetLevel accepted an invalid level")
+	}
+}
+
+// finishLogger 排空后台输出后才读取测试缓冲区，避免测试本身的数据竞争。
+func finishLogger(t *testing.T, logger *Logger) {
+	t.Helper()
+	if !logger.Shutdown(time.Second) {
+		t.Fatal("logger did not drain")
 	}
 }

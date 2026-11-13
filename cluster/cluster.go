@@ -3,7 +3,7 @@ package cluster
 
 import (
 	"context"
-	"log"
+	"github.com/gogu-x/tree/tlog"
 	"sync"
 	"time"
 
@@ -58,11 +58,11 @@ func registerWithTTL(serverID, NodeID, addr string, ttl int64) error {
 	go func() {
 		for range ch {
 		}
-		log.Printf("cluster: keepalive lost for [%s/%s], re-registering...", serverID, NodeID)
+		tlog.Error("cluster: keepalive lost for [%s/%s], re-registering...", serverID, NodeID)
 		for {
 			time.Sleep(2 * time.Second)
 			if err := registerWithTTL(serverID, NodeID, addr, ttl); err != nil {
-				log.Printf("cluster: re-register failed: %v", err)
+				tlog.Error("cluster: re-register failed: %v", err)
 				continue
 			}
 			return

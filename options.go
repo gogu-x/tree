@@ -1,6 +1,6 @@
 package tree
 
-import "log"
+import "github.com/gogu-x/tree/tlog"
 
 // defaultMailboxSize 是 mailbox 用户消息缓冲的默认大小。
 // Actor 可通过实现 MailboxSizer 覆盖（连接型 Actor 建议调小）。
@@ -15,7 +15,7 @@ type Logger interface {
 type stdLogger struct{}
 
 func (stdLogger) Error(format string, a ...interface{}) {
-	log.Printf("[error] "+format, a...)
+	tlog.Error("[error] "+format, a...)
 }
 
 // defaultLogger 在 Actor 未实现 LoggerProvider 时使用。

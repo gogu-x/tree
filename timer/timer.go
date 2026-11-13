@@ -1,7 +1,7 @@
 package timer
 
 import (
-	"fmt"
+	"github.com/gogu-x/tree/tlog"
 	"runtime"
 	"time"
 )
@@ -34,7 +34,7 @@ func (t *Timer) Cb() {
 		if r := recover(); r != nil {
 			buf := make([]byte, 4096)
 			l := runtime.Stack(buf, false)
-			fmt.Println(l)
+			tlog.Error("[timer/Timer.Cb] 定时回调异常, panic=%v stack=%s", r, buf[:l])
 		}
 	}()
 

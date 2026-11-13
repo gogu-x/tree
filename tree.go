@@ -1,11 +1,11 @@
 package tree
 
 import (
-	"container/list"
 	"fmt"
 	"os"
 	"os/signal"
 	"runtime"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -25,9 +25,11 @@ type Tree struct {
 
 	registry map[string]PID // name → PID registry
 
-	spawnOrder list.List // Spawn 时追加
-
 	wg sync.WaitGroup
+
+	lifecycleMu  sync.Mutex // 串行化注册和关闭快照，禁止关闭后新增 Actor。
+	closing      bool       // 已开始全局关闭。
+	shutdownOnce sync.Once  // 并发关闭调用共同等待同一次关闭完成。
 }
 
 // loadProc 从 actors 表中查找指定 PID 的进程。读路径基本无锁。
@@ -66,7 +68,7 @@ func (t *Tree) Spawn(actors ...Actor) []PID {
 	pids := make([]PID, len(actors))
 	procs := make([]*actorProcess, len(actors))
 
-	// 阶段一：分配并注册。全部注册完成后才启动 goroutine。
+	// 阶段一：分配。全部参数验证完成后才注册，避免留下未启动的进程。
 	for i, a := range actors {
 		if a == nil {
 			panic("tree: Spawn called with nil actor")
@@ -76,7 +78,7 @@ func (t *Tree) Spawn(actors ...Actor) []PID {
 			panic(fmt.Sprintf("tree: actor %T returned an empty Name()", a))
 		}
 
-		pid := allocatePID(name)
+		pid := PID{Name: name}
 		proc := &actorProcess{
 			pid:     pid,
 			actor:   a,
@@ -85,24 +87,33 @@ func (t *Tree) Spawn(actors ...Actor) []PID {
 			done:    make(chan interface{}, 1),
 		}
 
-		t.actors.Store(pid, proc)
-		t.count.Add(1)
-
-		t.regMu.Lock()
-		t.registry[name] = pid
-		t.spawnOrder.PushBack(proc)
-		t.regMu.Unlock()
-
 		pids[i] = pid
 		procs[i] = proc
 	}
+
+	t.lifecycleMu.Lock()
+	if t.closing {
+		t.lifecycleMu.Unlock()
+		panic("tree: Spawn called after shutdown started")
+	}
+	for i, proc := range procs {
+		// 在注册锁内分配编号，使编号顺序与实际注册顺序一致。
+		proc.pid = allocatePID(proc.pid.Name)
+		pids[i] = proc.pid
+		t.actors.Store(proc.pid, proc)
+		t.count.Add(1)
+		t.regMu.Lock()
+		t.registry[proc.pid.Name] = proc.pid
+		t.regMu.Unlock()
+	}
+	t.wg.Add(len(procs))
+	t.lifecycleMu.Unlock()
 
 	// 阶段二：严格按参数顺序启动。每个 actor 完成 OnInit 并进入消息
 	// 循环后，才初始化下一个 actor。这样后启动 actor 的 OnInit 可以
 	// 同步请求已经启动完成的底层 actor。
 	for _, proc := range procs {
 		initialized := make(chan struct{})
-		t.wg.Add(1)
 		go t.run(proc, initialized)
 		<-initialized
 	}
@@ -346,20 +357,51 @@ func (t *Tree) stop(pid PID) {
 	}
 }
 
-// Shutdown sends a stop signal to all registered actors and waits for them
-// to finish processing.
+// Shutdown 按注册顺序逆序逐个关闭存活 Actor，等待每个 OnStop 完成再关闭前一个。
+// 全局关闭标记排在普通消息队列末尾，不抢占此前已入队的业务消息。
+// 调用前应停止外部入口并完成业务异步存盘；OnStop 中的异步回调不会被自动等待。
+// 关闭开始后禁止 Spawn。不得从本系统 Actor 的回调中同步调用 Shutdown。
 func (t *Tree) Shutdown() {
-	t.actors.Range(func(_, v interface{}) bool {
-		v.(*actorProcess).mailbox.PushSystem(&Envelope{Kind: kindSystem, sys: systemStop})
-		return true
+	t.shutdownOnce.Do(func() {
+		t.lifecycleMu.Lock()
+		t.closing = true
+		procs := make([]*actorProcess, 0)
+		t.actors.Range(func(_, value interface{}) bool {
+			procs = append(procs, value.(*actorProcess))
+			return true
+		})
+		t.lifecycleMu.Unlock()
+		sort.Slice(procs, func(i, j int) bool { return procs[i].pid.ID > procs[j].pid.ID })
+		for _, proc := range procs {
+			select {
+			case <-proc.done:
+				continue
+			default:
+			}
+			select {
+			case proc.mailbox.userChan <- &Envelope{Kind: kindSystem, sys: systemStop}:
+			case <-proc.done:
+			}
+			<-proc.done
+		}
+		t.wg.Wait()
 	})
-	t.wg.Wait()
 }
 
 // SendCallback 向目标 Actor 投递一个回调，回调在目标 Actor 的 goroutine 内
 // 串行执行，并携带该 Actor 的 Context。
 func (t *Tree) SendCallback(pid PID, cb func(Context, interface{}, error), value interface{}, err error) bool {
 	return t.sendCallback(pid, cb, value, err)
+}
+
+// TrySendCallback 非阻塞投递回调；Actor 不存在或邮箱已满时返回 false。
+// 回调只会在目标 Actor 的消息循环中执行，不会在调用方执行。
+func (t *Tree) TrySendCallback(pid PID, cb func(Context, interface{}, error), value interface{}, err error) bool {
+	proc, ok := t.loadProc(pid)
+	if !ok {
+		return false
+	}
+	return proc.mailbox.TryPushUser(&Envelope{Kind: kindCallback, cb: cb, value: value, err: err})
 }
 
 // Register 将 pid 注册到指定 name，用于 Actor 运行时更新自己的可寻址名称。
