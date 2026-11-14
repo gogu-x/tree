@@ -22,9 +22,9 @@ type TimerType uint32
 // Handler 是定时任务到期后在绑定 Actor goroutine 内执行的回调。
 type Handler func(data interface{})
 
-// CallbackSender 非阻塞地向 Actor 邮箱投递回调；邮箱满时返回 false，由时间轮重试。
-// *tree.Tree 实现该接口。实现方不能同步执行回调，否则会重入分片锁。
-type CallbackSender interface {
+// callbackSender 非阻塞地向 Actor 邮箱投递回调；邮箱满时返回 false，由时间轮重试。
+// 实现方不能同步执行回调，否则会重入分片锁。
+type callbackSender interface {
 	TrySendCallback(pid tree.PID, cb func(tree.Context, interface{}, error), value interface{}, err error) bool
 }
 
@@ -35,7 +35,7 @@ type TimeWheel struct {
 	handlers map[TimerType]Handler    // 本 Actor 的任务类型注册表。
 	timers   map[*WheelTimer]struct{} // 尚未执行完成的任务，包含已投递回调。
 	target   tree.PID                 // 回调接收者。
-	sender   CallbackSender           // 非阻塞回调投递器。
+	sender   callbackSender           // 非阻塞回调投递器。
 	stopped  bool                     // 是否已停止接收和执行任务。
 	batch    int                      // 单轮向本 Actor 投递的最大任务数。
 	pending  list.List                // 已到期、尚未成功投递的任务。
@@ -60,9 +60,21 @@ type WheelCron struct {
 	timer *WheelTimer // 周期任务；无下一次执行时间时为 nil。
 }
 
-// NewTimeWheel 创建绑定到 target 的任务管理器，不为每个 Actor 创建 ticker 或 goroutine。
+// NewTimeWheel 创建绑定到全局 Actor target 的任务管理器，不创建独立 ticker 或 goroutine。
 // chanLen 保留原调用参数，现作为每轮向该 Actor 投递任务的数量上限；0 按 1 处理。
-func NewTimeWheel(chanLen int, target tree.PID, sender CallbackSender) *TimeWheel {
+func NewTimeWheel(chanLen int, target tree.PID) *TimeWheel {
+	return newTimeWheel(chanLen, target, globalSender{})
+}
+
+// globalSender 将时间轮回调投递到全局 Actor 邮箱。
+type globalSender struct{}
+
+func (globalSender) TrySendCallback(pid tree.PID, cb func(tree.Context, interface{}, error), value interface{}, err error) bool {
+	return tree.TrySendCallback(pid, cb, value, err)
+}
+
+// newTimeWheel 保留包内测试的可控投递器注入点。
+func newTimeWheel(chanLen int, target tree.PID, sender callbackSender) *TimeWheel {
 	if sender == nil {
 		panic("timer: NewTimeWheel called with nil message sender")
 	}

@@ -15,20 +15,22 @@ func (*retainedTestActor) HandleMessage(Context, interface{}) {}
 
 // TestStoppedActorCollected 验证框架存活时，已退出 Actor 不再被创建记录持有。
 func TestStoppedActorCollected(t *testing.T) {
-	system := NewTree()
+	if !isolatedGlobalTest(t) {
+		return
+	}
 	collected := make(chan struct{}, 1)
 	func() {
 		actor := &retainedTestActor{}
 		runtime.SetFinalizer(actor, func(*retainedTestActor) { collected <- struct{}{} })
-		system.SpawnOne(actor)
+		SpawnOne(actor)
 	}()
-	system.Shutdown()
+	Shutdown()
 	deadline := time.After(3 * time.Second)
 	for {
 		runtime.GC()
 		select {
 		case <-collected:
-			runtime.KeepAlive(system)
+			runtime.KeepAlive(&globalTree)
 			return
 		case <-deadline:
 			t.Fatal("已退出 Actor 仍被引用")

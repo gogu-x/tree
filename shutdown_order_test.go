@@ -28,12 +28,14 @@ func (a *shutdownActor) HandleMessage(ctx Context, message interface{}) {
 
 // TestShutdownReverseOrder 验证跨批次逆序关闭、等待 OnStop 和关闭期间底层依赖可用。
 func TestShutdownReverseOrder(t *testing.T) {
-	system := NewTree()
+	if !isolatedGlobalTest(t) {
+		return
+	}
 	var order []string
 	entered, release := make(chan struct{}), make(chan struct{})
 	errors := make(chan error, 1)
-	database := system.SpawnOne(&shutdownActor{name: "database", handle: func(ctx Context, _ interface{}) { ctx.Response(nil, nil) }, stop: func(Context) { order = append(order, "database") }})
-	system.SpawnOne(&shutdownActor{name: "business", stop: func(ctx Context) {
+	database := SpawnOne(&shutdownActor{name: "database", handle: func(ctx Context, _ interface{}) { ctx.Response(nil, nil) }, stop: func(Context) { order = append(order, "database") }})
+	SpawnOne(&shutdownActor{name: "business", stop: func(ctx Context) {
 		close(entered)
 		<-release
 		_, err := ctx.Request(database, "save").AwaitTimeout(time.Second)
@@ -41,9 +43,9 @@ func TestShutdownReverseOrder(t *testing.T) {
 		order = append(order, "business")
 	}})
 	done := make(chan struct{})
-	go func() { system.Shutdown(); close(done) }()
+	go func() { Shutdown(); close(done) }()
 	<-entered
-	if _, ok := system.Lookup("database"); !ok {
+	if _, ok := Lookup("database"); !ok {
 		t.Error("dependency stopped before business OnStop completed")
 	}
 	close(release)
@@ -62,10 +64,12 @@ func TestShutdownReverseOrder(t *testing.T) {
 
 // TestShutdownProcessesQueuedMessages 验证最后一个业务 Actor 投递给底层的消息不会被停止信号抢占。
 func TestShutdownProcessesQueuedMessages(t *testing.T) {
-	system := NewTree()
+	if !isolatedGlobalTest(t) {
+		return
+	}
 	entered, release := make(chan struct{}), make(chan struct{})
 	processed := 0
-	database := system.SpawnOne(&shutdownActor{name: "database", handle: func(_ Context, message interface{}) {
+	database := SpawnOne(&shutdownActor{name: "database", handle: func(_ Context, message interface{}) {
 		if message == "block" {
 			close(entered)
 			<-release
@@ -73,15 +77,15 @@ func TestShutdownProcessesQueuedMessages(t *testing.T) {
 		}
 		processed++
 	}})
-	system.Send(database, "block")
+	Send(database, "block")
 	<-entered
 	sent := make(chan struct{})
-	system.SpawnOne(&shutdownActor{name: "business", stop: func(ctx Context) {
+	SpawnOne(&shutdownActor{name: "business", stop: func(ctx Context) {
 		ctx.Send(database, "save")
 		close(sent)
 	}})
 	done := make(chan struct{})
-	go func() { system.Shutdown(); close(done) }()
+	go func() { Shutdown(); close(done) }()
 	<-sent
 	close(release)
 	select {
@@ -96,17 +100,19 @@ func TestShutdownProcessesQueuedMessages(t *testing.T) {
 
 // TestShutdownConcurrentAndStoppedActor 验证已自行退出的 Actor 不阻塞关闭，并发关闭安全且只执行一次。
 func TestShutdownConcurrentAndStoppedActor(t *testing.T) {
-	system := NewTree()
-	pid := system.SpawnOne(&shutdownActor{name: "exited", handle: func(ctx Context, _ interface{}) { ctx.Stop() }})
-	proc, _ := system.loadProc(pid)
-	system.Send(pid, "stop")
+	if !isolatedGlobalTest(t) {
+		return
+	}
+	pid := SpawnOne(&shutdownActor{name: "exited", handle: func(ctx Context, _ interface{}) { ctx.Stop() }})
+	proc, _ := loadProc(pid)
+	Send(pid, "stop")
 	<-proc.done
 	stops := 0
-	system.SpawnOne(&shutdownActor{name: "live", stop: func(Context) { stops++ }})
+	SpawnOne(&shutdownActor{name: "live", stop: func(Context) { stops++ }})
 	var wg sync.WaitGroup
 	for i := 0; i < 4; i++ {
 		wg.Add(1)
-		go func() { defer wg.Done(); system.Shutdown() }()
+		go func() { defer wg.Done(); Shutdown() }()
 	}
 	wg.Wait()
 	if stops != 1 {
@@ -117,5 +123,5 @@ func TestShutdownConcurrentAndStoppedActor(t *testing.T) {
 			t.Error("Spawn after Shutdown must be rejected")
 		}
 	}()
-	system.SpawnOne(&shutdownActor{name: "late"})
+	SpawnOne(&shutdownActor{name: "late"})
 }

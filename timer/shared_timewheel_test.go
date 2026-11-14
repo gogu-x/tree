@@ -35,7 +35,7 @@ func (s *controlledSender) take() []queuedCallback {
 	s.callbacks = nil
 	return callbacks
 }
-func manualWheel(shard *wheelShard, id uint64, sender CallbackSender, handler Handler) *TimeWheel {
+func manualWheel(shard *wheelShard, id uint64, sender callbackSender, handler Handler) *TimeWheel {
 	return &TimeWheel{shard: shard, handlers: map[TimerType]Handler{testTimerType: handler}, timers: make(map[*WheelTimer]struct{}), target: tree.PID{ID: id}, sender: sender, batch: 32}
 }
 func manualShard() *wheelShard { return &wheelShard{epoch: time.Now(), wake: make(chan struct{}, 1)} }
@@ -195,7 +195,7 @@ func TestSharedWheelCronStopDuringCallback(t *testing.T) {
 
 // TestSharedWheelConcurrentStop 验证添加任务和取消整个所有者的竞态。
 func TestSharedWheelConcurrentStop(t *testing.T) {
-	wheel := NewTimeWheel(32, tree.PID{ID: 1}, &controlledSender{})
+	wheel := newTimeWheel(32, tree.PID{ID: 1}, &controlledSender{})
 	wheel.Register(testTimerType, func(interface{}) {})
 	var wg sync.WaitGroup
 	for i := 0; i < 8; i++ {
@@ -225,7 +225,7 @@ func TestSharedWheelPopulation(t *testing.T) {
 	shards := make(map[*wheelShard]struct{})
 	sender := &controlledSender{}
 	for i := range wheels {
-		wheel := NewTimeWheel(32, tree.PID{ID: uint64(i + 1)}, sender)
+		wheel := newTimeWheel(32, tree.PID{ID: uint64(i + 1)}, sender)
 		wheel.Register(testTimerType, func(interface{}) {})
 		wheel.After(testTimerType, 5*time.Minute, nil)
 		shards[wheel.shard] = struct{}{}
@@ -268,23 +268,22 @@ func (a *mailboxActor) HandleMessage(_ tree.Context, message interface{}) {
 
 // TestSharedWheelRealMailbox 验证真实 Actor 邮箱背压不会阻塞同分片其他 Actor。
 func TestSharedWheelRealMailbox(t *testing.T) {
-	system := tree.NewTree()
 	entered, release := make(chan struct{}), make(chan struct{})
 	var releaseOnce sync.Once
 	unblock := func() { releaseOnce.Do(func() { close(release) }) }
-	slowPID := system.SpawnOne(&mailboxActor{name: "slow", entered: entered, release: release})
-	fastPID := system.SpawnOne(&mailboxActor{name: "fast"})
-	slow := NewTimeWheel(32, slowPID, system)
-	fast := NewTimeWheel(32, fastPID, system)
+	slowPID := tree.SpawnOne(&mailboxActor{name: "slow", entered: entered, release: release})
+	fastPID := tree.SpawnOne(&mailboxActor{name: "fast"})
+	slow := NewTimeWheel(32, slowPID)
+	fast := NewTimeWheel(32, fastPID)
 	// 将两个真实 Actor 的测试所有者放到同一分片，尚未注册任务。
 	fast.shard = slow.shard
-	defer func() { unblock(); slow.Stop(); fast.Stop(); system.Shutdown() }()
+	defer func() { unblock(); slow.Stop(); fast.Stop(); tree.Stop(slowPID); tree.Stop(fastPID) }()
 	slowCalled, fastCalled := make(chan struct{}, 1), make(chan struct{}, 1)
 	slow.Register(testTimerType, func(interface{}) { slowCalled <- struct{}{} })
 	fast.Register(testTimerType, func(interface{}) { fastCalled <- struct{}{} })
-	system.Send(slowPID, "block")
+	tree.Send(slowPID, "block")
 	<-entered
-	system.Send(slowPID, "fill")
+	tree.Send(slowPID, "fill")
 	slow.After(testTimerType, time.Millisecond, nil)
 	fast.After(testTimerType, time.Millisecond, nil)
 	select {

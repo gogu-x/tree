@@ -30,9 +30,8 @@ func TestCreateIndexes(t *testing.T) {
 	db := Connect(uri, "", "", dbName)
 	defer func() { _ = db.Drop(context.Background()) }()
 
-	system := tree.NewTree()
-	defer system.Shutdown()
-	pid := system.SpawnOne(NewActor("mongo_test", db))
+	pid := tree.SpawnOne(NewActor("mongo_test", db))
+	defer tree.Stop(pid)
 
 	request := &CreateIndexes{
 		Collection: "docs",
@@ -42,7 +41,7 @@ func TestCreateIndexes(t *testing.T) {
 	}
 	// 连续两次创建：第二次定义相同，应幂等成功。
 	for round := 0; round < 2; round++ {
-		value, err := system.Request(pid, request).AwaitTimeout(10 * time.Second)
+		value, err := tree.Request(pid, request).AwaitTimeout(10 * time.Second)
 		if err != nil {
 			t.Fatalf("round %d create indexes: %v", round, err)
 		}
@@ -74,7 +73,7 @@ func TestCreateIndexes(t *testing.T) {
 		Collection: "docs",
 		Indexes:    []mongo.IndexModel{{Keys: bson.D{{Key: "owner_id", Value: 1}}, Options: options.Index().SetName("idx_owner")}},
 	}
-	if _, err := system.Request(pid, conflict).AwaitTimeout(10 * time.Second); err == nil {
+	if _, err := tree.Request(pid, conflict).AwaitTimeout(10 * time.Second); err == nil {
 		t.Fatal("conflicting index definition should fail")
 	}
 }

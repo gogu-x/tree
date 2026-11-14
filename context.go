@@ -42,21 +42,15 @@ type Context interface {
 	// Lookup returns the PID registered under the given name.
 	// Returns a zero PID and false if not found.
 	Lookup(name string) (PID, bool)
-	// Register registers the current actor under an additional name.
-	// Useful when the actor's addressable name is known only after initialization (e.g. after login).
-	Register(name string)
-	// System returns the Tree this actor belongs to.
-	System() *Tree
 	// SetValue stores a user-defined value associated with the given key.
 	SetValue(key string, value interface{})
 	// GetValue retrieves a user-defined value by key. Returns nil if not set.
 	GetValue(key string) interface{}
 }
 
-// localContext implements Context for actors managed by an Tree.
+// localContext implements Context for actors managed by the global runtime.
 type localContext struct {
 	self    PID
-	system  *Tree
 	sender  PID
 	msg     interface{}
 	request *Envelope
@@ -67,33 +61,29 @@ func (c *localContext) Self() PID                  { return c.self }
 func (c *localContext) Sender() PID                { return c.sender }
 func (c *localContext) Message() interface{}       { return c.msg }
 func (c *localContext) RequestEnvelope() *Envelope { return c.request }
-func (c *localContext) System() *Tree              { return c.system }
 func (c *localContext) Send(pid PID, msg interface{}) bool {
-	return c.system.sendWithValues(pid, msg, c.self, c.values)
+	return sendWithValues(pid, msg, c.self, c.values)
 }
 func (c *localContext) TrySend(pid PID, msg interface{}) bool {
-	return c.system.trySendWithValues(pid, msg, c.self, c.values)
+	return trySendWithValues(pid, msg, c.self, c.values)
 }
 func (c *localContext) Response(value interface{}, err error) {
 	if c.request != nil {
 		c.request.Respond(value, err)
 	}
 }
-func (c *localContext) Stop() { c.system.stop(c.self) }
+func (c *localContext) Stop() { stop(c.self) }
 func (c *localContext) Request(pid PID, msg interface{}) *Envelope {
-	return c.system.requestWithValues(pid, msg, c.self, c.values, nil)
+	return requestWithValues(pid, msg, c.self, c.values, nil)
 }
 func (c *localContext) RequestCallback(pid PID, msg interface{}, cb func(Context, interface{}, error)) *Envelope {
-	return c.system.requestWithValues(pid, msg, c.self, c.values, cb)
+	return requestWithValues(pid, msg, c.self, c.values, cb)
 }
 func (c *localContext) RequestAsMessage(pid PID, msg interface{}) *Envelope {
-	return c.system.requestAsMessageWithValues(pid, msg, c.self, c.values)
+	return requestAsMessageWithValues(pid, msg, c.self, c.values)
 }
 func (c *localContext) Lookup(name string) (PID, bool) {
-	return c.system.Lookup(name)
-}
-func (c *localContext) Register(name string) {
-	c.system.Register(name, c.self)
+	return Lookup(name)
 }
 func (c *localContext) SetValue(key string, value interface{}) {
 	if c.values == nil {

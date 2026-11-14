@@ -73,9 +73,8 @@ type Envelope struct {
 	value interface{}
 	err   error
 
-	// pipeSys/pipePID 记录"响应应投递到哪个 actor"，
-	// 由 Tree.requestWithValues 在创建时填入。
-	pipeSys *Tree
+	// pipePID 记录响应应投递到哪个 Actor，
+	// 由全局请求入口在创建时填入。
 	pipePID PID
 }
 
@@ -140,9 +139,9 @@ func (e *Envelope) Respond(value interface{}, err error) {
 	}
 	switch e.Mode {
 	case modeCallback:
-		e.pipeSys.sendCallback(e.pipePID, e.cb, value, err)
+		sendCallback(e.pipePID, e.cb, value, err)
 	case modeMessage:
-		e.pipeSys.sendResponseAsMessage(e.pipePID, value, err, e.Values)
+		sendResponseAsMessage(e.pipePID, value, err, e.Values)
 	default:
 		e.resultCh <- FutureResult{Value: value, Err: err}
 	}
@@ -168,7 +167,7 @@ func (e *Envelope) AwaitTimeout(d time.Duration) (interface{}, error) {
 // Mailbox 为每个 actor 提供消息队列。
 //
 // 系统消息(systemChan)与用户消息(userChan)各自独立，优先级由消费者
-// (Tree.run 循环)通过两段式 select 在自己的 goroutine 内裁决，
+// (全局 run 循环)通过两段式 select 在自己的 goroutine 内裁决，
 type Mailbox struct {
 	userChan   chan *Envelope // 用户消息，带缓冲，缓冲满则 PushUser 阻塞(背压)
 	systemChan chan *Envelope // 系统消息(生命周期)，小缓冲，保证 Stop 不阻塞发送方

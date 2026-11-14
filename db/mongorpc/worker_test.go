@@ -175,15 +175,14 @@ func TestShardOf(t *testing.T) {
 
 func TestActorDrainAndPanicResponse(t *testing.T) {
 	useTestLogger(t)
-	system := tree.NewTree()
-	defer system.Shutdown()
 	// db 为空：执行任何数据库请求都会 panic，用于验证 panic 时请求方仍能收到错误回复。
-	pid := system.SpawnOne(NewActor("mongo_nil_test", nil, WithWorkers(4)))
+	pid := tree.SpawnOne(NewActor("mongo_nil_test", nil, WithWorkers(4)))
+	defer tree.Stop(pid)
 
-	if _, err := system.Request(pid, &FindOne{Collection: "docs", Key: uint64(1)}).AwaitTimeout(2 * time.Second); err == nil {
+	if _, err := tree.Request(pid, &FindOne{Collection: "docs", Key: uint64(1)}).AwaitTimeout(2 * time.Second); err == nil {
 		t.Fatal("panicking operation should respond with an error")
 	}
-	if _, err := system.Request(pid, &Drain{}).AwaitTimeout(2 * time.Second); err != nil {
+	if _, err := tree.Request(pid, &Drain{}).AwaitTimeout(2 * time.Second); err != nil {
 		t.Fatalf("drain failed: %v", err)
 	}
 }
@@ -200,16 +199,15 @@ func TestActorConcurrentUpserts(t *testing.T) {
 	db := Connect(uri, "", "", dbName)
 	defer func() { _ = db.Drop(context.Background()) }()
 
-	system := tree.NewTree()
-	defer system.Shutdown()
-	pid := system.SpawnOne(NewActor("mongo_worker_test", db, WithWorkers(8)))
+	pid := tree.SpawnOne(NewActor("mongo_worker_test", db, WithWorkers(8)))
+	defer tree.Stop(pid)
 
 	const docs = 500
 	const rounds = 5
 	envelopes := make([]*tree.Envelope, 0, docs*rounds)
 	for round := 1; round <= rounds; round++ {
 		for id := 0; id < docs; id++ {
-			envelopes = append(envelopes, system.Request(pid, &UpdateOne{
+			envelopes = append(envelopes, tree.Request(pid, &UpdateOne{
 				Collection: "docs",
 				Filter:     bson.M{"_id": id},
 				Update:     bson.M{"$set": bson.M{"round": round}},
@@ -223,7 +221,7 @@ func TestActorConcurrentUpserts(t *testing.T) {
 			t.Fatalf("upsert failed: %v", err)
 		}
 	}
-	if _, err := system.Request(pid, &Drain{}).AwaitTimeout(10 * time.Second); err != nil {
+	if _, err := tree.Request(pid, &Drain{}).AwaitTimeout(10 * time.Second); err != nil {
 		t.Fatalf("drain failed: %v", err)
 	}
 	count, err := db.Collection("docs").CountDocuments(context.Background(), bson.M{"round": rounds})
