@@ -3,96 +3,44 @@ package cluster
 import (
 	"context"
 	"fmt"
-	"github.com/gogu-x/tree/tlog"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/gogu-x/tree/tlog"
 	mvccpb "go.etcd.io/etcd/api/v3/mvccpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
 const servicePrefix = "/services/"
 
-// ServiceInstance describes one entry under
-// /services/{type}/{serverID}/{nodeID}.
+// ServiceInstance 是 /services/{type}/{serverID}/{nodeID} 下登记的服务节点。
 type ServiceInstance struct {
-	// Type is kept as the concise service-type name; ServiceType is an explicit
-	// alias useful when ServiceInstance is embedded in ServiceEvent.
-	Type        string
-	ServiceType string
-	ServerID    string
-	NodeID      string
-	Addr        string
+	ServerID string
+	NodeID   string
+	Addr     string
 }
 
-// ServiceEvent describes a service registry change. Type and Event both hold
-// "put" or "delete"; Type mirrors the legacy InstanceEvent convention.
-type ServiceEvent struct {
-	ServiceInstance
-	Type  string
-	Event string
-}
-
-// RegisterService registers a generic service node using the same default TTL
-// and keepalive behavior as the legacy Register API.
-func RegisterService(serviceType, serverID, nodeID, addr string) error {
+// StartService 使用 Init 创建的客户端监听区服时间偏移并注册服务节点。
+// 首次注册失败时后台重试。
+func StartService(serviceType, serverID, nodeID, addr string) error {
 	if err := validateServiceIdentity(serviceType, serverID, nodeID); err != nil {
 		return err
 	}
-	return registerServiceWithTTL(serviceType, serverID, nodeID, addr, defaultTTL)
-}
-
-func registerServiceWithTTL(serviceType, serverID, nodeID, addr string, ttl int64) error {
-	if Client == nil {
-		return fmt.Errorf("cluster: client is not initialized")
-	}
-	lease, err := Client.Grant(context.Background(), ttl)
-	if err != nil {
+	if err := StartWithTimeOffset(serverID); err != nil {
 		return err
 	}
 	key := serviceInstKey(serviceType, serverID, nodeID)
-	if _, err = Client.Put(context.Background(), key, addr, clientv3.WithLease(lease.ID)); err != nil {
-		_, _ = Client.Revoke(context.Background(), lease.ID)
-		return err
+	client := etcdClient
+	if err := registerNode(client, key, addr); err != nil {
+		tlog.Error("[cluster/StartService] 节点注册失败，将重试, key=%v addr=%v err=%v", key, addr, err)
+		go retryRegistration(client, key, addr)
 	}
-	ch, err := Client.KeepAlive(context.Background(), lease.ID)
-	if err != nil {
-		_, _ = Client.Revoke(context.Background(), lease.ID)
-		return err
-	}
-	go func() {
-		for range ch {
-		}
-		tlog.Error("cluster: service keepalive lost for [%s/%s/%s], re-registering...", serviceType, serverID, nodeID)
-		for {
-			time.Sleep(2 * time.Second)
-			if err := registerServiceWithTTL(serviceType, serverID, nodeID, addr, ttl); err != nil {
-				tlog.Error("cluster: service re-register failed: %v", err)
-				continue
-			}
-			return
-		}
-	}()
 	return nil
 }
 
-// DeregisterService removes a generic service node immediately.
-func DeregisterService(serviceType, serverID, nodeID string) error {
-	if err := validateServiceIdentity(serviceType, serverID, nodeID); err != nil {
-		return err
-	}
-	if Client == nil {
-		return fmt.Errorf("cluster: client is not initialized")
-	}
-	_, err := Client.Delete(context.Background(), serviceInstKey(serviceType, serverID, nodeID))
-	return err
-}
-
-// GetServices queries generic service entries. An empty serverID returns all
-// servers of the requested type; serviceType must be a single non-empty path
-// segment.
-func GetServices(serviceType, serverID string) ([]ServiceInstance, error) {
+// getServices 查询指定服务类型的节点，serverID 为空时查询该类型下的全部节点。
+func getServices(serviceType, serverID string) ([]ServiceInstance, error) {
 	if err := validateServiceSegment("type", serviceType); err != nil {
 		return nil, err
 	}
@@ -101,7 +49,8 @@ func GetServices(serviceType, serverID string) ([]ServiceInstance, error) {
 			return nil, err
 		}
 	}
-	if Client == nil {
+	client := etcdClient
+	if client == nil {
 		return nil, fmt.Errorf("cluster: client is not initialized")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -110,30 +59,24 @@ func GetServices(serviceType, serverID string) ([]ServiceInstance, error) {
 	if serverID != "" {
 		prefix += serverID + "/"
 	}
-	resp, err := Client.Get(ctx, prefix, clientv3.WithPrefix())
+	resp, err := client.Get(ctx, prefix, clientv3.WithPrefix())
 	if err != nil {
 		return nil, err
 	}
 	return serviceInstances(resp.Kvs), nil
 }
 
-// GetServiceInstances is a named convenience wrapper for querying one server.
-func GetServiceInstances(serviceType, serverID string) ([]ServiceInstance, error) {
-	if serverID == "" {
-		return nil, fmt.Errorf("cluster: serverID must not be empty")
-	}
-	return GetServices(serviceType, serverID)
-}
-
-// GetAllServices returns every server/node registered for one service type.
+// GetAllServices 返回指定服务类型的全部已登记节点。
 func GetAllServices(serviceType string) ([]ServiceInstance, error) {
-	return GetServices(serviceType, "")
+	return getServices(serviceType, "")
 }
 
-// GetServiceAddr returns the most recently registered node address for a
-// service type/server pair.
+// GetServiceAddr 返回指定服务类型及区服下最新注册的节点地址。
 func GetServiceAddr(serviceType, serverID string) (string, error) {
-	instances, err := GetServiceInstances(serviceType, serverID)
+	if serverID == "" {
+		return "", fmt.Errorf("cluster: serverID must not be empty")
+	}
+	instances, err := getServices(serviceType, serverID)
 	if err != nil {
 		return "", err
 	}
@@ -141,55 +84,6 @@ func GetServiceAddr(serviceType, serverID string) (string, error) {
 		return "", fmt.Errorf("cluster: service %s/%s not found", serviceType, serverID)
 	}
 	return instances[0].Addr, nil
-}
-
-// WatchServices watches /services/{type}/. Passing an empty serviceType watches
-// all generic service types. The returned channel closes when the etcd watch
-// ends or ctx is cancelled.
-func WatchServices(ctx context.Context, serviceType string) <-chan ServiceEvent {
-	out := make(chan ServiceEvent, 64)
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	if serviceType != "" {
-		if err := validateServiceSegment("type", serviceType); err != nil {
-			close(out)
-			return out
-		}
-	}
-	if Client == nil {
-		close(out)
-		return out
-	}
-	prefix := servicePrefix
-	if serviceType != "" {
-		prefix = serviceTypePrefix(serviceType)
-	}
-	go func() {
-		defer close(out)
-		wch := Client.Watch(ctx, prefix, clientv3.WithPrefix(), clientv3.WithPrevKV())
-		for wresp := range wch {
-			for _, ev := range wresp.Events {
-				inst, ok := parseServiceKV(ev.Kv)
-				if !ok {
-					continue
-				}
-				eventType := "put"
-				if ev.Type == clientv3.EventTypeDelete {
-					eventType = "delete"
-					if ev.PrevKv != nil {
-						inst.Addr = string(ev.PrevKv.Value)
-					}
-				}
-				select {
-				case out <- ServiceEvent{ServiceInstance: inst, Type: eventType, Event: eventType}:
-				case <-ctx.Done():
-					return
-				}
-			}
-		}
-	}()
-	return out
 }
 
 func serviceInstances(kvs []*mvccpb.KeyValue) []ServiceInstance {
@@ -218,7 +112,7 @@ func parseServiceKV(kv *mvccpb.KeyValue) (ServiceInstance, bool) {
 	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
 		return ServiceInstance{}, false
 	}
-	return ServiceInstance{Type: parts[0], ServiceType: parts[0], ServerID: parts[1], NodeID: parts[2], Addr: string(kv.Value)}, true
+	return ServiceInstance{ServerID: parts[1], NodeID: parts[2], Addr: string(kv.Value)}, true
 }
 
 func serviceInstKey(serviceType, serverID, nodeID string) string {
